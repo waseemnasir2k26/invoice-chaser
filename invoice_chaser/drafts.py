@@ -12,7 +12,13 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("._") or "invoice"
 
 
+def one_line(s: str) -> str:
+    """Header values never carry CR/LF (stops header injection from CSV data)."""
+    return re.sub(r"[\r\n]+", " ", str(s)).strip()
+
+
 def build_eml(to: str, sender_name: str, sender_email: str, subject: str, body: str) -> EmailMessage:
+    to, sender_name, sender_email, subject = map(one_line, (to, sender_name, sender_email, subject))
     msg = EmailMessage()
     msg["To"] = to
     msg["From"] = f"{sender_name} <{sender_email}>"
@@ -29,9 +35,15 @@ def write_drafts(items: list[dict], out_dir: Path) -> list[Path]:
     for old in d.glob("*.eml"):
         old.unlink()
     paths = []
+    used: set[str] = set()
     for it in items:
         msg = build_eml(it["to"], it["from_name"], it["from_email"], it["subject"], it["body"])
-        p = d / f"{safe_name(it['invoice_id'])}-{it['stage']}.eml"
+        stem = f"{safe_name(it['invoice_id'])}-{it['stage']}"
+        name, n = stem, 2
+        while name.lower() in used:  # ids like A/1 and A_1 must not overwrite each other
+            name, n = f"{stem}-{n}", n + 1
+        used.add(name.lower())
+        p = d / f"{name}.eml"
         p.write_bytes(bytes(msg))
         it["file"] = p.name
         paths.append(p)
