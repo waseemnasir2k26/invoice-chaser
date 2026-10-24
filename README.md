@@ -24,13 +24,13 @@ invoice-chaser demo
 
 Open `out/review.html` (macOS `open`, Windows `start`, Linux `xdg-open`): the top of the page has one copy-paste command per suggested payment. Python 3.10+, no dependencies.
 
+![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
+
 ![The loop: run, review.html, confirm, run again](docs/flow.png)
 
 Point this at your invoice list and your Wise, Payoneer or bank export. It matches payments to invoices and shows each match with its reason and the exact payment row. You review the list and confirm what is right. It writes a reminder draft, in the right tone for how late the invoice is, only for invoices where it found no payment at all. It never sends anything, and your data never leaves your machine: no account, no SaaS login.
 
 It never suggests paid on a near match of an id or a name: 3,360 adversarial cases in the test suite (near-miss ids and names, refunds in many languages, failed payments, future dates, shared prices). Each scenario is executed and logged by `tests/test_adversarial.py`, and a test compares that logged count with this number. One deliberate exception: a payment that carries your exact invoice id is suggested even if the payer is someone else (you see the payer and decide). If it is not sure it says why and waits for you, and a waiting suggestion never hides an unpaid invoice for long: see "stuck" below.
-
-![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
 
 The top of the page, "Confirm these", has one copy-paste command per suggested payment; `invoice-chaser confirm --all-strong` shows the list and asks y/N. Python 3.10+, no dependencies. For your own data: `invoice-chaser run --invoices invoices.csv --wise wise.csv --out out` (details below).
 
@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.3  as of 2026-10-25
+invoice-chaser 1.1.4  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -148,14 +148,14 @@ Currencies are read as ISO codes (`usd ` becomes `USD`, `€` EUR, `£` GBP). A 
 
 Speed: candidates per invoice are bounded, never an all-pairs scan. Exactly: payments that name the invoice id (a payment naming more than 3 known ids is never paired; an invoice named by more than 20 payments goes to review in bulk); payments from a payer equal to the client inside the date window (the 20 nearest the due date); payments with the exact invoice amount, only when there are at most 20 of them (otherwise review in bulk). Measured cold, one run each, single thread, on a Windows 11 laptop (Intel 13th-gen-class CPU, 24 logical cores, Python 3.11.9) with synthetic data from `tests/perfdata.py` (500 distinct client names, so about 6 invoices and 30 payments per client, denser than most real exports): 60 invoices x 600 payments 0.03 s; 500 x 3,000 0.21 s; 1,000 x 5,000 0.39 s; 3,000 x 15,000 1.4 s; 6,000 x 30,000 2.2 s. Worst cases checked by tests: one price for every invoice (1,000 x 5,000) under 5 s, and every payment naming every invoice (500 x 2,000) under 3 s. Your numbers will differ.
 
-**Payment ids are stable.** A payment's id is its real transaction id when the export has one, otherwise a hash of the source, date, amount, currency, description and payer. Never a row number, so re-exporting a statement (new rows, other order) cannot move a confirmation or a rejection onto a different client's payment. Ledgers written by 1.1.0 that used row-numbered ids lose those references on the first run, with a warning that stays visible in `review.html`.
+**Payment ids: the exact rule.** A payment's id is its real transaction id when the export has one. Otherwise it is a hash of the source, date, amount, currency, the description (punctuation, capitals and spacing ignored) and the payer as a company (`ACME LTD` and `Acme Limited` are the same company; `Acme Inc` is not), plus an occurrence index that counts only rows with exactly that same full key. It is never a row number, and it never depends on how many other rows exist: a lone row keeps its id when a same-day sibling from someone else shows up in a later export. If any of those fields changes (the bank rewords the description, a different company name), the id changes, and the repeat check below holds the payment instead of trusting it. Consuming a confirmed payment, honouring a rejection and confirming a new one all require the same id AND the same date, amount, currency and payer. Any mismatch (a bank reusing a transaction id, two payments that once shared an id) is held in needs review with a loud warning and the next step; it is never silently dropped. Ledgers written by 1.1.0 that used row-numbered ids lose those references on the first run, with a warning that stays visible in `review.html`.
 
 ## The re-export trap and how it is handled
 
 You download the statement again next week. The file now has new rows, a different order, maybe slightly different wording. Anything that remembers a payment by its position (row 7) would now point at a different client's payment. Here is what keeps that from hurting you:
 
-- **Payment ids never use the row number.** A payment's id is the transaction id when the export has one. Otherwise it is a hash of the source, date, amount, currency, description and payer, with punctuation, capital letters and spacing ignored. New rows or a different order change nothing.
-- **A repeat is recognised even when the wording changed.** When you confirm a payment, the ledger remembers its date, amount, currency and payer. If a later export shows a payment within a day of that date with the same amount, currency and payer but a new id, it is held in **needs review** as "possible repeat of a payment you already confirmed": never counted again, never suggested as new, and `confirm` refuses it. A genuine second payment of the same amount a week later is a different date and is suggested normally.
+- **Payment ids never use the row number, and never depend on the other rows.** See the exact rule above: the same payment keeps the same id whatever else appears in the export, so new rows, a different order or a same-day sibling change nothing.
+- **A repeat is recognised even when the wording changed.** When you confirm a payment, the ledger remembers its date, amount, currency and payer. If a later export shows a payment within a day of that date with the same amount, currency and company but a new id, it is held in **needs review** as "possible repeat of a payment you already confirmed": never counted again, never suggested as new, and `confirm` refuses it. It is NOT a repeat when the bank gave the two payments different transaction ids or the text names a different invoice. A genuine second payment of the same amount a week later is a different date and is suggested normally.
 - **Identical rows stay separate, but are flagged.** Two genuinely identical payments in one file are two payments. An identical row that shows up in two different exports (or the same file given twice) is kept, not merged, and held for review: one real payment or two? You decide.
 - **Old row-numbered ledger entries are not trusted.** A confirmed part-payment that was tied to row numbers (versions before 1.1.1) is rolled back and the invoice is marked "re-confirm after upgrade", so the same payment cannot be counted twice. It is never chased for the full amount while that is open.
 
@@ -239,6 +239,7 @@ Invoices with a missing or invalid email get no draft. They show as "missing ema
 - **The refund/failure word list is not complete.** It covers the common payment languages (above), not every language or every phrasing. Anything that slips past it still only becomes a suggestion that you confirm.
 - **No bank connection.** You download the statements; nothing logs in for you.
 - **Cross-currency needs your rate.** Without an entry like `"EUR/USD": "1.08"` in `fx_rates`, payments in another currency are not matched (and only the invoice-id path accepts a converted amount).
+- **A remainder equal to the deposit is held.** If you confirmed a 500 deposit and the other 500 arrives on the same day with the same payer and no transaction id of its own, it looks exactly like a re-export of the deposit, so it is held in needs review rather than counted. Check your statement; if it really is a second payment, record the invoice with `invoice-chaser mark-paid INV-x`. This costs you one command; the alternative is counting one payment twice.
 - **Overpayments** are flagged for review.
 - **Reminders are not legal notices.** The text is a starting point for politeness; it is not legal or financial advice, and late-payment rules differ by country and contract.
 - **Your edits are safe.** drafts.json stores a hash of every draft it wrote. A draft you edited is never deleted or overwritten: the new one is written beside it as `<name>.new.eml` with a warning. Files that are not ours are never touched.

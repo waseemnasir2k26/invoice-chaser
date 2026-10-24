@@ -33,7 +33,7 @@ from pathlib import Path
 
 from .ladder import STAGES
 
-_SECTIONS = ("sent", "paid", "received", "rejected", "dropped", "reconfirm")
+_SECTIONS = ("sent", "paid", "received", "rejected", "rejected_rows", "dropped", "reconfirm")
 
 
 def _read(path: str | Path) -> dict:
@@ -63,8 +63,8 @@ def _read(path: str | Path) -> dict:
         for e in out["rejected"].values():
             if not isinstance(e, list):
                 raise ValueError("rejected entries must be lists")
-        if not isinstance(out["dropped"], dict) or not isinstance(out["reconfirm"], dict):
-            raise ValueError("dropped and reconfirm must be objects")
+        if not isinstance(out["dropped"], dict) or not isinstance(out["reconfirm"], dict) or not isinstance(out["rejected_rows"], dict):
+            raise ValueError("dropped, reconfirm and rejected_rows must be objects")
     except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
         raise ValueError(f"{p.name}: not a valid sent ledger ({exc})") from exc
     return out
@@ -166,6 +166,11 @@ def load_received(path: str | Path) -> dict[str, dict]:
 
 def load_rejected(path: str | Path) -> dict[str, list[str]]:
     return _read(path)["rejected"]
+
+
+def load_rejected_rows(path: str | Path) -> dict[str, dict]:
+    """What each rejected payment looked like when you rejected it: {invoice: {key: {date, amount, currency, payer, text}}}."""
+    return _read(path)["rejected_rows"]
 
 
 def load_dropped(path: str | Path) -> dict[str, list[str]]:
@@ -290,12 +295,14 @@ def apply_confirmations(path: str | Path, ops: list[dict]) -> None:
         _write(path, data)
 
 
-def record_rejected(path: str | Path, invoice_id: str, payment_id: str) -> None:
+def record_rejected(path: str | Path, invoice_id: str, payment_id: str, row: dict | None = None) -> None:
     with _locked(path):
         data = _read(path)
         ids = data["rejected"].setdefault(invoice_id, [])
         if payment_id not in ids:
             ids.append(payment_id)
+        if row:
+            data["rejected_rows"].setdefault(invoice_id, {})[payment_id] = row
         _write(path, data)
 
 

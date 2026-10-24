@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__
 from .config import load_config, validate
 from .decision import IdIndex, field_texts, visible
-from .dedupe import dedupe_payments, payment_row, repeat_of
+from .dedupe import dedupe_payments, payment_row, repeat_of, row_matches
 from .drafts import valid_email, write_drafts
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
@@ -31,6 +31,7 @@ from .ledger import (
     load_received,
     load_reconfirm,
     load_rejected,
+    load_rejected_rows,
     migrate_row_keys,
     record_paid,
     record_received,
@@ -134,9 +135,30 @@ def run(args) -> int:
                         f"across exports; check this invoice (a rejected payment may be suggested again)")
 
     # ---- what you already decided: confirmed payments are consumed, rejected ones never come back ----
-    consumed = {k for m in list(paid_marks.values()) + list(received_marks.values()) for k in m.get("payments", [])}
-    payments = [p for p in payments if _pkey(p) not in consumed]
+    consumed = {k: inv for inv, m in list(paid_marks.items()) + list(received_marks.items()) for k in m.get("payments", [])}
     confirmed_rows = load_payment_rows(lpath)
+    rows_by_key: dict[str, dict] = {}
+    for row in confirmed_rows:
+        rows_by_key.setdefault(row["key"], row)
+    kept = []
+    for p in payments:
+        k = _pkey(p)
+        if k in consumed:
+            row = rows_by_key.get(k)
+            if row is not None and row_matches(p, row, 0):
+                continue  # the very payment you confirmed (same id AND same date, amount, currency and payer): consumed
+            owner = row["invoice"] if row else consumed[k]
+            if row is not None:
+                p.suspect = f"id collision with a payment you confirmed for {owner}: same id, but a different date, amount or payer"
+            else:
+                p.suspect = (f"its id is in your ledger for {owner}, but the ledger has no record of what that payment looked like, "
+                             f"so it cannot be shown to be the same one")
+            warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}, payer {p.payer or 'none'}): {p.suspect}. It is NOT "
+                            f"treated as already confirmed: it is held in needs review. Next step: compare it with the confirmed payment on your "
+                            f"statement; if it is a different payment, check it and run `invoice-chaser mark-paid <invoice>`; if it is the same one, "
+                            f"nothing to do.")
+        kept.append(p)
+    payments = kept
     cross = opts.cross_file_ids()
     id_index = IdIndex((i.id for i in invoices), cfg.ref_prefixes)
     for p in payments:
@@ -149,11 +171,32 @@ def run(args) -> int:
         if hit:  # a cosmetic re-export changed the id, but it is the same date, amount, currency and payer
             p.suspect = f"possible repeat of a payment you already confirmed for {hit['invoice']}: not counted again"
             warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}) looks like a repeat of a payment you "
-                            f"confirmed for {hit['invoice']}; it is held in needs review and not counted again")
+                            f"confirmed for {hit['invoice']}; it is held in needs review and not counted again. Next step: if it is the same payment, "
+                            f"leave it. If you checked and it is a separate one, run `invoice-chaser mark-paid {quote(hit['invoice'])}` or the invoice it belongs to.")
     if cross:
         warnings.append(f"{len(cross)} payment row(s) are identical in two of your exports (one real payment or two?): both are "
-                        f"kept and held in needs review, never silently merged or dropped")
-    excluded = {(iid, k) for iid, keys in rejected.items() for k in keys}
+                        f"kept and held in needs review, never silently merged or dropped. Next step: check your statement. If it is one payment, "
+                        f"leave one of the two files out of the command and run again; if both are real, check them and `invoice-chaser mark-paid <invoice>`.")
+    # a rejection only applies to the payment you rejected: same id AND same date, amount, currency and payer
+    rejected_rows = ci(load_rejected_rows(lpath))
+    by_key: dict[str, list] = {}
+    for p in payments:
+        by_key.setdefault(_pkey(p), []).append(p)
+    excluded = set()
+    for iid, keys in rejected.items():
+        for k in keys:
+            row = rejected_rows.get(iid, {}).get(k)
+            for p in by_key.get(k, []):
+                if row is None:
+                    warnings.append(f"your rejection of {k} for {iid} was made by an older version and has no fingerprint, so it cannot be "
+                                    f"checked: the payment is suggested again. Next step: reject it once more to make it stick.")
+                elif row_matches(p, row, 0):
+                    excluded.add((iid, k))
+                else:
+                    p.suspect = p.suspect or f"id collision with a payment you rejected for {iid}: same id, but a different date, amount or payer"
+                    warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}) shares its id with a payment you rejected for "
+                                    f"{iid}, but it is a different payment; it is held in needs review. Next step: check it on your statement, "
+                                    f"then `invoice-chaser mark-paid <invoice>` if it is paid.")
     by_id = {i.id.strip().lower(): i for i in invoices}
     engine_invoices = []
     for i in invoices:
@@ -503,6 +546,11 @@ def _check_still_valid(entries: list[dict], meta: dict, lpath: Path, real_today:
 def _repeat_problems(entry: dict, rows: list[dict]) -> list[str]:
     msgs = []
     for p in entry["payments"]:
+        for r in rows:
+            if r["key"] == p["key"] and not row_matches(p, r, 0):
+                msgs.append(f"{entry['invoice_id']}: payment {p['id']} has the same id as a payment you confirmed for {r['invoice']}, but a different "
+                            f"date, amount or payer. It is held to be safe. Next step: compare both on your statement; if this one is really "
+                            f"paid, record the invoice yourself with `invoice-chaser mark-paid {quote(entry['invoice_id'])}`.")
         hit = repeat_of(p, [r for r in rows if r["key"] != p["key"]], p.get("named", ()))
         if hit:
             msgs.append(f"{entry['invoice_id']}: payment {p['id']} looks like a repeat of a payment you already confirmed for {hit['invoice']} "
@@ -610,11 +658,13 @@ def reject(args) -> int:
     entries, _ = _load_suggestions(out)
     want = args.payment.strip()
     keys = {}
+    rows = {}
     for e in entries:
         if e["invoice_id"].lower() == invoice_id.lower():
             for p in e["payments"]:
                 keys[p["id"].lower()] = p["key"]
                 keys[p["key"].lower()] = p["key"]
+                rows[p["key"]] = {k: v for k, v in payment_row(p).items() if k != "key"}
     key = keys.get(want.lower())
     if key is None:
         if ":" in want and args.force:
@@ -622,7 +672,7 @@ def reject(args) -> int:
         else:
             raise ValueError(f"{want!r} is not a payment suggested for {invoice_id} in the last run "
                              f"(known: {', '.join(sorted({k for k in keys if ':' not in k})) or 'none'})")
-    record_rejected(_ledger_path(args), invoice_id, key)
+    record_rejected(_ledger_path(args), invoice_id, key, rows.get(key))
     print(f"rejected: {key} will never be suggested for {invoice_id} again\n  re-run `invoice-chaser run` to update the report")
     return 0
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.4 - 2026-10-25
+
+- **A confirmed payment is only consumed when it really is that payment.** Matching the id was not enough: a bank can reuse a transaction id, and two rows can end up with the same id. A payment is now dropped as "already confirmed" only when its id AND its date, amount, currency and payer (as a company) agree with what the ledger remembered. Any mismatch keeps the payment, holds it in needs review as "id collision with a payment you confirmed for INV-x", and prints a loud warning with the next step. A paid client can no longer be chased because another client's payment was swallowed. The same check applies to rejections (stored with a fingerprint now; an older rejection without one is reported and the payment is suggested again until you reject it once more) and to `confirm`.
+- **The id design, once.** A hash id is H(source, date, amount, currency, normalised description, the payer as a company), always, plus an occurrence index counting only rows with exactly the same full key. The id never depends on how many other rows exist, so a lone row keeps its id when a same-day sibling appears (a reject no longer silently comes undone), and `ACME LTD` / `Acme Limited` still get the same id while `Acme Inc` does not.
+- Every hold warning now says what to do next.
+- README: the exact id rule, a Limits bullet on the deposit-remainder hold with the `mark-paid` advice, and the `review.html` screenshot directly under the quickstart.
+
 ## 1.1.3 - 2026-10-25
 
 - **Two real payments are not "repeats".** A payment is only held as a possible repeat of a confirmed one when nothing tells them apart: two different bank transaction ids, or a text that names a different invoice, now mean two payments. Same-day equal payments for two invoices can both be confirmed. A part-payment remainder equal to the deposit with no distinguishing reference is still held (it could be a re-export), and the message says so and offers `mark-paid`; it never suggests `reject` as the remedy.

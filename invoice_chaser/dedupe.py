@@ -32,6 +32,25 @@ def payment_row(p) -> dict:
             _squash(p["description"] if isinstance(p, dict) else p.description)[:80]}
 
 
+def row_matches(p, row: dict, days: int = 0) -> bool:
+    """Is this payment the one the ledger row describes? Date (within `days`), amount, currency and payer (as a company)
+    must all agree. An id match alone is never enough: banks reuse ids and two exports can make the same id."""
+    me = payment_row(p)
+    try:
+        if abs((date.fromisoformat(row["date"]) - date.fromisoformat(me["date"])).days) > days:
+            return False
+        if Decimal(row["amount"]) != Decimal(me["amount"]):
+            return False
+    except (ValueError, ArithmeticError, KeyError, TypeError):
+        return False
+    if row.get("currency") != me["currency"]:
+        return False
+    if me["payer"] or row.get("payer"):
+        ka, kb = company_key(me["payer"]) if me["payer"] else None, company_key(row["payer"]) if row.get("payer") else None
+        return ka is not None and ka == kb
+    return me["text"] == row.get("text", "")
+
+
 _HASH_ID = re.compile(r"^h-[0-9a-f]{12}$")
 
 

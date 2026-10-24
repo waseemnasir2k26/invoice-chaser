@@ -19,6 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .decision import company_key
 from .models import Invoice, Payment
 
 
@@ -50,26 +51,20 @@ class ParseOptions:
     def finalize_ids(self) -> None:
         """(Re)assign the ids of every payment without a real transaction id, across ALL files parsed so far.
 
-        id = hash(source, date, amount, currency, normalised description). The payer is left OUT of the hash, so a payer
-        renamed in a later export (ACME LTD -> Acme Limited) keeps its id. Only when several rows share all of that (two
-        clients paid the same amount on the same day with the same wording) does the normalised payer break the tie, and
-        rows identical in everything get an occurrence counter: two genuine identical payments stay two payments."""
+        id = hash(source, date, amount, currency, normalised description, the payer as a company) + an occurrence index
+        that only counts rows with exactly the same full key. So the id never depends on how many OTHER rows exist: a lone
+        row keeps its id when a same-day sibling from someone else appears. Punctuation, capitals and spacing are ignored,
+        and a payer renamed within the same company (ACME LTD -> Acme Limited) keeps the id. Rows identical in every field
+        stay two payments (index 1, 2); the same row in two exports is flagged (one real payment or two?)."""
         groups: dict[str, list] = {}
         for rec in self.pending:
-            groups.setdefault(rec["base"], []).append(rec)
+            groups.setdefault(rec["key"], []).append(rec)
         cross: set[str] = set()
-        for base, recs in groups.items():
-            if len(recs) == 1:
-                recs[0]["payment"].id = "h-" + hashlib.sha256(f"{base}#1".encode("utf-8")).hexdigest()[:12]
-                continue
-            by_payer: dict[str, list] = {}
-            for rec in recs:
-                by_payer.setdefault(rec["payer"], []).append(rec)
-            for payer, rs in by_payer.items():
-                for k, rec in enumerate(rs, 1):
-                    rec["payment"].id = "h-" + hashlib.sha256(f"{base}|{payer}#{k}".encode("utf-8")).hexdigest()[:12]
-                if len({rec["file"] for rec in rs}) > 1:
-                    cross.update(rec["payment"].id for rec in rs)
+        for key, recs in groups.items():
+            for k, rec in enumerate(recs, 1):
+                rec["payment"].id = "h-" + hashlib.sha256(f"{key}#{k}".encode("utf-8")).hexdigest()[:12]
+            if len({rec["file"] for rec in recs}) > 1:
+                cross.update(rec["payment"].id for rec in recs)
         self._cross = cross
 
 
@@ -390,8 +385,10 @@ class _Ids:
         pay = Payment(real_id or "h-pending", d, amount, currency, description, payer, source)
         if not real_id:
             clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())  # noqa: E731
-            base = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description)])
-            self.opts.pending.append({"payment": pay, "base": base, "payer": clean(payer), "file": self.file_no})
+            ck = company_key(payer) if payer else None
+            who = "" if ck is None else " ".join(ck[0]) + "/" + ",".join(sorted(ck[1]))
+            key = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description), who])
+            self.opts.pending.append({"payment": pay, "key": key, "file": self.file_no})
         return pay
 
 
