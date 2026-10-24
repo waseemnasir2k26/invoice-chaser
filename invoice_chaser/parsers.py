@@ -34,19 +34,43 @@ class ParseOptions:
     decimal_comma: bool | None = None  # None: refuse ambiguous amounts like 1,234 / 1.500
     warnings: list[str] = field(default_factory=list)
     ignored: list[Payment] = field(default_factory=list)  # negative rows: refunds, fees, withdrawals
-    # stable ids (see stable_id): one counter for ALL files of a run, so identical rows in two exports stay two payments
-    id_counts: dict = field(default_factory=dict)
-    id_base: dict = field(default_factory=dict)  # payment id -> row content it was made from
-    row_files: dict = field(default_factory=dict)  # row content -> the set of parsed files it appeared in
+    # stable payment ids: see _Ids / finalize_ids
+    pending: list = field(default_factory=list)
     files_parsed: int = 0
+    _cross: set = field(default_factory=set)
 
     def warn(self, msg: str) -> None:
         if msg not in self.warnings:
             self.warnings.append(msg)
 
     def cross_file_ids(self) -> set:
-        """Ids of payments whose exact row content appears in more than one file of this run."""
-        return {pid for pid, base in self.id_base.items() if len(self.row_files.get(base, ())) > 1}
+        """Ids of payments whose exact row (same payer too) appears in more than one file of this run."""
+        return set(self._cross)
+
+    def finalize_ids(self) -> None:
+        """(Re)assign the ids of every payment without a real transaction id, across ALL files parsed so far.
+
+        id = hash(source, date, amount, currency, normalised description). The payer is left OUT of the hash, so a payer
+        renamed in a later export (ACME LTD -> Acme Limited) keeps its id. Only when several rows share all of that (two
+        clients paid the same amount on the same day with the same wording) does the normalised payer break the tie, and
+        rows identical in everything get an occurrence counter: two genuine identical payments stay two payments."""
+        groups: dict[str, list] = {}
+        for rec in self.pending:
+            groups.setdefault(rec["base"], []).append(rec)
+        cross: set[str] = set()
+        for base, recs in groups.items():
+            if len(recs) == 1:
+                recs[0]["payment"].id = "h-" + hashlib.sha256(f"{base}#1".encode("utf-8")).hexdigest()[:12]
+                continue
+            by_payer: dict[str, list] = {}
+            for rec in recs:
+                by_payer.setdefault(rec["payer"], []).append(rec)
+            for payer, rs in by_payer.items():
+                for k, rec in enumerate(rs, 1):
+                    rec["payment"].id = "h-" + hashlib.sha256(f"{base}|{payer}#{k}".encode("utf-8")).hexdigest()[:12]
+                if len({rec["file"] for rec in rs}) > 1:
+                    cross.update(rec["payment"].id for rec in rs)
+        self._cross = cross
 
 
 def norm(h: str) -> str:
@@ -343,6 +367,7 @@ def _join(*parts: str) -> str:
 
 
 def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skipped_status: int = 0) -> list[Payment]:
+    opts.finalize_ids()
     neg = [p for p in opts.ignored if p.source == Path(path).name]
     if neg:
         opts.warn(f"{Path(path).name}: {len(neg)} negative row(s) ignored (refunds, fees, withdrawals); they are NOT netted "
@@ -353,30 +378,21 @@ def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skippe
 
 
 class _Ids:
-    """Makes the ids of the payments of ONE file.
-
-    A real transaction id is used as is. Otherwise the id is a hash of what the row says (source, date, amount,
-    currency, description and payer with punctuation, case and spacing ignored), never the row number, so
-    re-exporting the statement (new rows, other order, cosmetic wording changes) keeps the id. Rows identical in
-    every field get an occurrence counter shared by all files of the run: two genuine identical payments stay two
-    payments, and an identical row found in two different exports is reported (one real payment or two?)."""
+    """Builds the payments of ONE file. A real transaction id is kept as is; otherwise the id comes from
+    ParseOptions.finalize_ids (content hash, never a row number)."""
 
     def __init__(self, opts: ParseOptions):
         self.opts = opts
         opts.files_parsed += 1
         self.file_no = opts.files_parsed
 
-    def make(self, source: str, real_id: str, d: date, amount: Decimal, currency: str, description: str, payer: str) -> str:
-        if real_id:
-            return real_id
-        clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())  # noqa: E731
-        base = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description), clean(payer)])
-        o = self.opts
-        o.id_counts[base] = o.id_counts.get(base, 0) + 1
-        pid = "h-" + hashlib.sha256(f"{base}#{o.id_counts[base]}".encode("utf-8")).hexdigest()[:12]
-        o.id_base[pid] = base
-        o.row_files.setdefault(base, set()).add(self.file_no)
-        return pid
+    def payment(self, source: str, real_id: str, d: date, amount: Decimal, currency: str, description: str, payer: str) -> Payment:
+        pay = Payment(real_id or "h-pending", d, amount, currency, description, payer, source)
+        if not real_id:
+            clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())  # noqa: E731
+            base = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description)])
+            self.opts.pending.append({"payment": pay, "base": base, "payer": clean(payer), "file": self.file_no})
+        return pay
 
 
 def _ignored(opts: ParseOptions, source: str, id_: str, d: date, amt: Decimal, cur: str, desc: str, payer: str) -> None:
@@ -411,11 +427,11 @@ def parse_wise(path: str | Path, opts: ParseOptions | None = None) -> list[Payme
             continue
         desc = _join(_get(r, c_desc), _get(r, c_ref), _get(r, c_note))
         if amt < 0:
-            _ignored(opts, Path(path).name, ids.make("wise", _get(r, c_id), d, amt, cur, desc, _get(r, c_payer)), d, amt, cur, desc, _get(r, c_payer))
+            _ignored(opts, Path(path).name, _get(r, c_id) or "ignored", d, amt, cur, desc, _get(r, c_payer))
             continue
         if amt == 0:
             continue
-        out.append(Payment(ids.make("wise", _get(r, c_id), d, amt, cur, desc, _get(r, c_payer)), d, amt, cur, desc, _get(r, c_payer), "wise"))
+        out.append(ids.payment("wise", _get(r, c_id), d, amt, cur, desc, _get(r, c_payer)))
     return _finish(path, len(rows), out, opts)
 
 
@@ -453,11 +469,11 @@ def parse_payoneer(path: str | Path, opts: ParseOptions | None = None) -> list[P
             m = re.match(r"(?i)\s*payment\s+from\s+(.+?)(?:\s+(?:inv|invoice|ref)\b.*)?$", desc)
             payer = m.group(1).strip() if m else ""
         if amt < 0:
-            _ignored(opts, Path(path).name, ids.make("payoneer", _get(r, c_id), d, amt, cur, desc, payer), d, amt, cur, desc, payer)
+            _ignored(opts, Path(path).name, _get(r, c_id) or "ignored", d, amt, cur, desc, payer)
             continue
         if amt == 0:
             continue
-        out.append(Payment(ids.make("payoneer", _get(r, c_id), d, amt, cur, desc, payer), d, amt, cur, desc, payer, "payoneer"))
+        out.append(ids.payment("payoneer", _get(r, c_id), d, amt, cur, desc, payer))
     return _finish(path, len(rows), out, opts, skipped)
 
 
@@ -501,9 +517,9 @@ def parse_generic(path: str | Path, mapping: dict[str, str], opts: ParseOptions 
             _bad_row(opts, path, n, e)
             continue
         if amt < 0:
-            _ignored(opts, Path(path).name, ids.make("bank", _get(r, c_id), d, amt, cur, _get(r, c_desc), _get(r, c_payer)), d, amt, cur, _get(r, c_desc), _get(r, c_payer))
+            _ignored(opts, Path(path).name, _get(r, c_id) or "ignored", d, amt, cur, _get(r, c_desc), _get(r, c_payer))
             continue
         if amt == 0:
             continue
-        out.append(Payment(ids.make("bank", _get(r, c_id), d, amt, cur, _get(r, c_desc), _get(r, c_payer)), d, amt, cur, _get(r, c_desc), _get(r, c_payer), "bank"))
+        out.append(ids.payment("bank", _get(r, c_id), d, amt, cur, _get(r, c_desc), _get(r, c_payer)))
     return _finish(path, len(rows), out, opts)

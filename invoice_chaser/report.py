@@ -8,6 +8,7 @@ from html import escape
 from pathlib import Path
 
 from .models import InvoiceResult, Payment
+from .decision import visible
 from .shellquote import quote
 
 STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),
@@ -112,7 +113,7 @@ def _confirm_section(suggestions: list[dict], out_hint: str) -> str:
         for p in s["payments"]:
             amt = f"{Decimal(p['amount']):,.2f}"
             pays += (f"<div class=small><strong>{e(p['id'])}</strong> ({e(p['source'])}) {e(p['date'])}: {e(amt)} {e(p['currency'])}"
-                     f" from {e(p['payer'] or '(no payer name)')}<br>{e(p['description'])}</div>")
+                     f" from {e(visible(p['payer']) or '(no payer name)')}<br>{e(visible(p['description']))}</div>")
         iid = shlex_quote(s["invoice_id"])
         cmds = f"<div>{_cmd('invoice-chaser confirm ' + iid + out)}</div>"
         for p in s["payments"]:

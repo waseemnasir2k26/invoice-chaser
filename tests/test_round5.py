@@ -66,9 +66,11 @@ def test_identical_rows_stay_two_payments_but_the_same_row_in_two_files_is_one(t
     from invoice_chaser.dedupe import dedupe_payments
     g = tmp_path / "w2.csv"
     g.write_text(WISE_HEAD + ROW_A, encoding="utf-8")
+    opts = ParseOptions()                                   # one run, two exports: an identical row is kept and flagged, never merged
+    both = parse_wise(f, opts) + parse_wise(g, opts)
+    assert len(both) == 3 and len({p.id for p in both}) == 3 and opts.cross_file_ids() == {p.id for p in both}
     msgs = []
-    kept = dedupe_payments(a[:1] + parse_wise(g), msgs.append)
-    assert len(kept) == 1 and "duplicate payment row dropped" in msgs[0]
+    assert len(dedupe_payments(both, msgs.append)) == 3 and not msgs        # only a REAL transaction id twice is dropped
 
 
 def test_reexport_cannot_move_a_confirmation_onto_another_clients_payment(tmp_path):

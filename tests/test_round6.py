@@ -82,9 +82,9 @@ def test_a_genuine_second_payment_a_week_later_is_still_suggested(tmp_path):
 
 
 def test_repeat_of_matches_within_a_day_and_needs_the_same_amount_currency_and_payer():
-    rows = [payment_row({"source": "wise", "id": "A", "date": "2026-10-05", "amount": "500.00", "currency": "USD",
+    rows = [payment_row({"source": "wise", "id": "h-aaaaaaaaaaaa", "date": "2026-10-05", "amount": "500.00", "currency": "USD",
                          "payer": "Acme Studio!", "description": "x"})]
-    pay = lambda **k: Payment("B", k.get("d", date(2026, 10, 5)), Decimal(k.get("amt", "500")), k.get("cur", "USD"), "y",  # noqa: E731
+    pay = lambda **k: Payment("h-bbbbbbbbbbbb", k.get("d", date(2026, 10, 5)), Decimal(k.get("amt", "500")), k.get("cur", "USD"), "y",  # noqa: E731
                               k.get("payer", "ACME studio"), "wise")
     assert repeat_of(pay(), rows) and repeat_of(pay(d=date(2026, 10, 6)), rows) and repeat_of(pay(d=date(2026, 10, 4)), rows)
     assert not repeat_of(pay(d=date(2026, 10, 7)), rows)

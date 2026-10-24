@@ -12,6 +12,7 @@ import re
 from datetime import date
 from decimal import Decimal
 
+from .decision import company_key
 from .matching import norm_name
 from .models import Payment
 
@@ -31,10 +32,25 @@ def payment_row(p) -> dict:
             _squash(p["description"] if isinstance(p, dict) else p.description)[:80]}
 
 
-def repeat_of(p, rows: list[dict]) -> dict | None:
-    """The confirmed payment this one looks like (date within a day, same amount, currency and payer), or None.
-    A cosmetic change to the description or punctuation does not make a payment a new one."""
+_HASH_ID = re.compile(r"^h-[0-9a-f]{12}$")
+
+
+def is_hash_id(payment_id: str) -> bool:
+    """True for an id made by this tool (no transaction id in the export)."""
+    return bool(_HASH_ID.match(payment_id or ""))
+
+
+def repeat_of(p, rows: list[dict], named=()) -> dict | None:
+    """The confirmed payment this one looks like, or None.
+
+    Looks like: date within a day, same amount and currency, and the same company as payer (ACME LTD = Acme Limited).
+    NOT a repeat when the two payments carry different real transaction ids from the bank, or when this payment's
+    text names an invoice other than the one the confirmed payment was for: those are two payments. The hold applies
+    to everything else, including a part-payment remainder equal to the deposit: counting a payment twice could mark an
+    invoice paid that is not, so when in doubt it is held for you (`mark-paid` if you checked)."""
     me = payment_row(p)
+    my_id = (p["id"] if isinstance(p, dict) else p.id)
+    named_l = {str(n).strip().lower() for n in named}
     try:
         d, amt = date.fromisoformat(me["date"]), Decimal(me["amount"])
     except (ValueError, ArithmeticError):
@@ -47,7 +63,12 @@ def repeat_of(p, rows: list[dict]) -> dict | None:
             continue
         if r.get("currency") != me["currency"]:
             continue
-        if me["payer"] and r.get("payer") == me["payer"]:
+        rid = str(r.get("key", "")).split(":", 1)[-1]
+        if not is_hash_id(my_id) and not is_hash_id(rid) and my_id != rid:
+            continue  # two different transaction ids from the bank: two payments
+        if named_l and str(r.get("invoice", "")).strip().lower() not in named_l:
+            continue  # it names a different invoice than the one the confirmed payment was for
+        if me["payer"] and r.get("payer") and company_key(me["payer"]) is not None and company_key(me["payer"]) == company_key(r["payer"]):
             return r
         if not me["payer"] and not r.get("payer") and me["text"] and r.get("text") == me["text"]:
             return r

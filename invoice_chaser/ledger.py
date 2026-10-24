@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import date
@@ -99,6 +100,7 @@ def _locked(path: str | Path, timeout: float = 30.0):
                     if time.monotonic() > deadline:
                         raise ValueError(f"could not lock {lock.name} (another invoice-chaser is writing the ledger)") from None
                     time.sleep(0.02)
+        _clean_orphans(Path(path))
         yield
     finally:
         try:
@@ -114,13 +116,39 @@ def _locked(path: str | Path, timeout: float = 30.0):
         fh.close()
 
 
-def _write(path: str | Path, data: dict) -> None:
-    """Atomic: write a uniquely named temp file next to the ledger, then replace. Call inside _locked()."""
+def atomic_write_text(path: str | Path, text: str, backup: bool = False) -> None:
+    """Durable and atomic: write a uniquely named temp file next to the target, flush it to disk (fsync), keep a .bak of
+    what is being replaced if asked, then replace. A crash leaves either the old file or the new one, never half of one."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if backup and p.exists():
+            shutil.copy2(p, p.with_name(p.name + ".bak"))
+        os.replace(tmp, p)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _clean_orphans(path: Path, older_than: float = 60.0) -> None:
+    """Temp files left behind by a run that was killed mid-write."""
+    now = time.time()
+    for f in path.parent.glob(f"{path.name}.*.tmp"):
+        try:
+            if now - f.stat().st_mtime > older_than:
+                f.unlink()
+        except OSError:
+            pass
+
+
+def _write(path: str | Path, data: dict) -> None:
+    """Atomic write of the ledger with a .bak of the previous version. Call inside _locked()."""
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), backup=True)
 
 
 def load_ledger(path: str | Path) -> dict[str, list[dict]]:
@@ -237,6 +265,28 @@ def record_received(path: str | Path, invoice_id: str, when: date, amount: Decim
         data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
                                         "snapshot": snapshot or {}, "payment_rows": list(rows)}
         data["reconfirm"].pop(invoice_id, None)
+        _write(path, data)
+
+
+def apply_confirmations(path: str | Path, ops: list[dict]) -> None:
+    """Several confirmations in ONE locked read-modify-write and ONE atomic write: all of them or none.
+
+    op: {invoice_id, kind: "paid"|"received", when: date, snapshot, keys, rows, amount (received), source}"""
+    with _locked(path):
+        data = _read(path)
+        for op in ops:
+            inv = op["invoice_id"]
+            if op["kind"] == "paid":
+                data["paid"][inv] = {"date": op["when"].isoformat(), "note": "", "source": op.get("source", "confirm"),
+                                     "payments": list(op["keys"]), "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
+                data["received"].pop(inv, None)
+            else:
+                amount = Decimal(op["amount"])
+                if not amount.is_finite() or amount < 0:
+                    raise ValueError(f"received amount {op['amount']!r} must be a finite, non-negative number")
+                data["received"][inv] = {"date": op["when"].isoformat(), "amount": str(amount), "payments": list(op["keys"]),
+                                         "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
+            data["reconfirm"].pop(inv, None)
         _write(path, data)
 
 

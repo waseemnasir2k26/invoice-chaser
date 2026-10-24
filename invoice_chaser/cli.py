@@ -14,10 +14,13 @@ from pathlib import Path
 
 from . import __version__
 from .config import load_config, validate
+from .decision import IdIndex, field_texts, visible
 from .dedupe import dedupe_payments, payment_row, repeat_of
 from .drafts import valid_email, write_drafts
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
+    apply_confirmations,
+    atomic_write_text,
     ci,
     highest_sent,
     last_sent_date,
@@ -135,10 +138,14 @@ def run(args) -> int:
     payments = [p for p in payments if _pkey(p) not in consumed]
     confirmed_rows = load_payment_rows(lpath)
     cross = opts.cross_file_ids()
+    id_index = IdIndex((i.id for i in invoices), cfg.ref_prefixes)
     for p in payments:
         if p.id in cross and not p.suspect:
             p.suspect = "identical payment found in two exports: one real payment or two?"
-        hit = repeat_of(p, confirmed_rows)
+        named = set()
+        for text in field_texts(p.description, p.payer):
+            named |= id_index.find(text)
+        hit = repeat_of(p, confirmed_rows, named)
         if hit:  # a cosmetic re-export changed the id, but it is the same date, amount, currency and payer
             p.suspect = f"possible repeat of a payment you already confirmed for {hit['invoice']}: not counted again"
             warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}) looks like a repeat of a payment you "
@@ -218,10 +225,13 @@ def run(args) -> int:
         keys = rejected.get(r.invoice.id.strip().lower())
         if keys and r.status in ("overdue", "needs_review"):
             r.why_not_paid = f"you rejected {', '.join(k.split(':', 1)[-1] for k in keys)} for this invoice; " + (r.why_not_paid or "")
-    _age_and_stick(results, out, cfg, today)
+    _age_and_stick(results, out, cfg, today, warnings)
     suggestions = _suggestions(results, received_marks, cfg, today)
     for s in suggestions:
         s["ledger_state"] = _ledger_state(paid_marks, received_marks, rejected, s["invoice_id"])
+        if s["kind"] == "paid" and Decimal(s["previous_received"]) > 0:
+            warnings.append(f"{s['invoice_id']}: suggested as FULLY paid only because it adds up with the part-payment of "
+                            f"{s['previous_received']} you confirmed earlier. If that earlier confirmation was wrong, this is not paid.")
     if not cfg.sender_email:
         warnings.append("sender_email is not set: set sender_email in your config file. "
                         "Drafts use a placeholder From address until you do.")
@@ -338,16 +348,18 @@ def _suggestions(results, received_marks, cfg, today) -> list[dict]:
             "previous_received": prev["amount"] if prev else "0",
             "previous_payments": list(prev.get("payments", [])) if prev else [],
             "confidence": r.confidence,
-            "reason": "; ".join(m.reason for m in matches) if r.status != "needs_review" else r.why_not_paid,
+            "reason": (("; ".join(m.reason for m in matches) if r.status != "needs_review" else r.why_not_paid)
+                       + (f"; adds up with the {prev['amount']} you confirmed earlier for this invoice" if prev and r.status == "suggested_paid" else "")),
             "payments": [{"key": f"{m.source}:{m.payment_id}", "id": m.payment_id, "source": m.source,
                           "date": m.payment_date.isoformat(), "amount": str(m.amount), "currency": m.currency,
-                          "payer": m.payer, "description": m.payment_description, "allocated": str(m.allocated)}
+                          "payer": m.payer, "description": m.payment_description, "allocated": str(m.allocated),
+                          "named": list(m.named)}
                          for m in matches],
         })
     return out
 
 
-def _age_and_stick(results, out: Path, cfg, today: date) -> None:
+def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) -> None:
     """Remember when each invoice first started waiting for your decision (out/seen.json, keyed by INVOICE, not by
     payment, so a changed payment id or a flip between "suggested" and "needs review" does not restart the clock).
     The earliest date wins and is never later than the real date on this computer, so running with a future --today
@@ -355,12 +367,21 @@ def _age_and_stick(results, out: Path, cfg, today: date) -> None:
     suggestion still waiting, makes it STUCK: a loud banner, a CLI line and an internal note to you."""
     real_today = date.today()
     seen_file = out / "seen.json"
-    try:
-        history = json.loads(seen_file.read_text(encoding="utf-8-sig"))
-        if not isinstance(history, dict):
+    history: dict = {}
+    if seen_file.exists():
+        try:
+            history = json.loads(seen_file.read_text(encoding="utf-8-sig"))
+            if not isinstance(history, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError):
+            backup = seen_file.with_name(f"seen.json.corrupt-{real_today.isoformat()}")
+            try:
+                seen_file.replace(backup)
+            except OSError:
+                pass
             history = {}
-    except (OSError, ValueError):
-        history = {}
+            warnings.append(f"seen.json could not be read, so I do not know how long invoices have been waiting. The damaged file was kept as "
+                            f"{backup.name}. Waiting times restart today: check the oldest suggestions and reviews yourself.")
     now: dict[str, dict] = {}
     for r in results:
         if r.status not in ("suggested_paid", "partial_suggested", "needs_review"):
@@ -377,7 +398,7 @@ def _age_and_stick(results, out: Path, cfg, today: date) -> None:
         r.waiting_days = max((today - first).days, 0)
         r.stuck = r.waiting_days > cfg.stuck_after_days or r.days_overdue > cfg.stuck_overdue_days
     out.mkdir(parents=True, exist_ok=True)
-    seen_file.write_text(json.dumps(now, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_text(seen_file, json.dumps(now, indent=2, sort_keys=True))
 
 
 def _check_item(r, cfg, out_hint: str) -> dict:
@@ -479,31 +500,54 @@ def _check_still_valid(entries: list[dict], meta: dict, lpath: Path, real_today:
                              f"run `invoice-chaser run` again, then confirm")
 
 
-def _repeat_guard(entry: dict, lpath: Path) -> None:
-    """A payment that looks like one you already confirmed (same date, amount, currency, payer) is never confirmed again."""
-    rows = load_payment_rows(lpath)
+def _repeat_problems(entry: dict, rows: list[dict]) -> list[str]:
+    msgs = []
     for p in entry["payments"]:
-        hit = repeat_of(p, [r for r in rows if r["key"] != p["key"]])
+        hit = repeat_of(p, [r for r in rows if r["key"] != p["key"]], p.get("named", ()))
         if hit:
-            raise ValueError(f"payment {p['id']} looks like a repeat of a payment you already confirmed for {hit['invoice']} "
-                             f"(same date, amount and payer): it is not counted again. Reject it with `invoice-chaser reject "
-                             f"{quote(entry['invoice_id'])} {quote(p['id'])}` if it is the same one")
+            msgs.append(f"{entry['invoice_id']}: payment {p['id']} looks like a repeat of a payment you already confirmed for {hit['invoice']} "
+                        f"(same date, amount and payer). It is held to be safe: counting one payment twice could mark an invoice paid that is "
+                        f"not. If you have checked and it really is a separate payment, record the invoice yourself with "
+                        f"`invoice-chaser mark-paid {quote(entry['invoice_id'])}`.")
+    return msgs
 
 
-def _apply_confirm(entry: dict, when: date, lpath: Path) -> str:
-    _repeat_guard(entry, lpath)
-    previous_rows = [{k: v for k, v in r.items() if k != "invoice"} for r in load_payment_rows(lpath)
+def _repeat_guard(entry: dict, lpath: Path) -> None:
+    """A payment that looks like one you already confirmed is never confirmed again."""
+    problems = _repeat_problems(entry, load_payment_rows(lpath))
+    if problems:
+        raise ValueError(problems[0])
+
+
+def _confirm_op(entry: dict, when: date, rows_all: list[dict]) -> tuple[dict, str]:
+    previous_rows = [{k: v for k, v in r.items() if k != "invoice"} for r in rows_all
                      if r["invoice"].strip().lower() == entry["invoice_id"].strip().lower()]
     rows = previous_rows + [payment_row(p) for p in entry["payments"]]
     keys = list(entry["previous_payments"]) + [p["key"] for p in entry["payments"]]
     got = Decimal(entry["previous_received"]) + sum((Decimal(p["allocated"]) for p in entry["payments"]), Decimal(0))
     amount = Decimal(entry["amount"])
     if entry["kind"] == "paid" or got >= amount - Decimal(entry["tolerance"]):
-        record_paid(lpath, entry["invoice_id"], when, "", entry["snapshot"], keys, source="confirm", rows=rows)
-        return f"{entry['invoice_id']}: paid ({entry['currency']} {got:,.2f} of {amount:,.2f}, payments {', '.join(p['id'] for p in entry['payments'])})"
-    record_received(lpath, entry["invoice_id"], when, got, keys, entry["snapshot"], rows=rows)
-    return (f"{entry['invoice_id']}: part-payment {entry['currency']} {got:,.2f} of {amount:,.2f} recorded; "
-            f"{amount - got:,.2f} stays outstanding and will be chased")
+        op = {"invoice_id": entry["invoice_id"], "kind": "paid", "when": when, "snapshot": entry["snapshot"], "keys": keys, "rows": rows,
+              "source": "confirm"}
+        return op, (f"{entry['invoice_id']}: paid ({entry['currency']} {got:,.2f} of {amount:,.2f}, "
+                    f"payments {', '.join(p['id'] for p in entry['payments'])})")
+    op = {"invoice_id": entry["invoice_id"], "kind": "received", "when": when, "snapshot": entry["snapshot"], "keys": keys, "rows": rows,
+          "amount": str(got)}
+    return op, (f"{entry['invoice_id']}: part-payment {entry['currency']} {got:,.2f} of {amount:,.2f} recorded; "
+                f"{amount - got:,.2f} stays outstanding and will be chased")
+
+
+def _confirm_all(entries: list[dict], when: date, lpath: Path) -> list[str]:
+    """All or nothing: every check for every invoice runs first and a single problem stops the whole batch with the
+    full list; only then is the ledger written, once, atomically."""
+    rows = load_payment_rows(lpath)
+    problems = [m for e in entries for m in _repeat_problems(e, rows)]
+    if problems:
+        raise ValueError("nothing was recorded, because " + ("one confirmation is" if len(problems) == 1 else f"{len(problems)} confirmations are")
+                         + " held back:\n  " + "\n  ".join(problems))
+    built = [_confirm_op(e, when, rows) for e in entries]
+    apply_confirmations(lpath, [op for op, _ in built])
+    return [summary for _, summary in built]
 
 
 def confirm(args) -> int:
@@ -520,13 +564,17 @@ def confirm(args) -> int:
             print("nothing to confirm: no strong suggested-paid invoices in the last run")
             return 0
         _check_still_valid(todo, meta, lpath, real_today)
+        problems = [m for e in todo for m in _repeat_problems(e, load_payment_rows(lpath))]
+        if problems:  # before anything is shown or asked: the whole batch is refused with the full list
+            raise ValueError("nothing was recorded, because " + ("one confirmation is" if len(problems) == 1 else f"{len(problems)} confirmations are")
+                             + " held back:\n  " + "\n  ".join(problems))
         print("These invoices will be recorded as PAID in the ledger. Read the payer and the text of each payment:")
         for e in todo:
-            print(f"  {e['invoice_id']}  {e['client']}  {e['currency']} {Decimal(e['amount']):,.2f}")
+            print(f"  {e['invoice_id']}  {visible(e['client'])}  {e['currency']} {Decimal(e['amount']):,.2f}")
             for p in e["payments"]:
                 print(f"      payment {p['id']} ({p['source']}) {p['date']}  {Decimal(p['amount']):,.2f} {p['currency']}")
-                print(f"        payer: {p['payer'] or '(none)'}")
-                print(f"        text:  {p['description'] or '(none)'}")
+                print(f"        payer: {visible(p['payer']) or '(none)'}")
+                print(f"        text:  {visible(p['description']) or '(none)'}")
         if not args.yes:
             try:
                 answer = input(f"Confirm {len(todo)} invoice(s) as paid? [y/N] ").strip().lower()
@@ -536,9 +584,10 @@ def confirm(args) -> int:
             if answer not in ("y", "yes"):
                 print("nothing recorded")
                 return 1
-        for e in todo:
-            print("  " + _apply_confirm(e, when, lpath))
-        print(f"recorded {len(todo)} confirmation(s) -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
+        summaries = _confirm_all(todo, when, lpath)
+        for line in summaries:
+            print("  " + line)
+        print(f"recorded {len(todo)} confirmation(s) in one step -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
         return 0
     if not args.invoice:
         raise ValueError("give an invoice id, or use --all-strong")
@@ -550,7 +599,7 @@ def confirm(args) -> int:
                          + (" (it only has weak candidates: if you checked and it is paid, use `invoice-chaser mark-paid`)" if weak
                             else " (use `invoice-chaser mark-paid` if you checked yourself)"))
     _check_still_valid([entry], meta, lpath, real_today)
-    print(_apply_confirm(entry, when, lpath))
+    print(_confirm_all([entry], when, lpath)[0])
     print(f"recorded -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
     return 0
 

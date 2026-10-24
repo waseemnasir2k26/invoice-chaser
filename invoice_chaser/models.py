@@ -45,6 +45,7 @@ class Match:
     source: str = ""
     currency: str = ""
     amount: Decimal = Decimal(0)  # the payment row as exported (before conversion)
+    named: tuple = ()  # invoice ids the payment text names
 
 
 @dataclass

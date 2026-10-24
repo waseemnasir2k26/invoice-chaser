@@ -217,33 +217,91 @@ def field_texts(description: str, payer: str) -> list[str]:
     return [f"{description or ''} {payer or ''}"]
 
 
+# Letters that look like Latin ones (Cyrillic and Greek homoglyphs) and invisible characters are used to hide a word
+# from a plain search. The check therefore looks at the text several ways.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x",
+    "і": "i", "ї": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ɡ": "g", "ո": "n", "ս": "u",
+    "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "γ": "y",
+})
+_SPACED = re.compile(r"(?<![^\W\d_])(?:[^\W\d_][ \u00a0.\-_]+){2,}[^\W\d_](?![^\W\d_])")
+_SPACER = re.compile(r"[ \u00a0.\-_]+")
+_INVISIBLE_NAMES = {"\u200b": "ZWSP", "\u200c": "ZWNJ", "\u200d": "ZWJ", "\u2060": "WJ", "\u00ad": "SHY", "\ufeff": "BOM",
+                    "\u200e": "LRM", "\u200f": "RLM", "\u2061": "FA", "\u2062": "IT", "\u2063": "IS", "\u2064": "IP"}
+
+
+def _strip_invisible(t: str) -> str:
+    return "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+
+
+def visible(text: str) -> str:
+    """Show invisible characters visibly, e.g. a zero-width space as <ZWSP>, so a payer or description cannot hide them."""
+    out = []
+    for ch in text or "":
+        if unicodedata.category(ch) == "Cf":
+            out.append("\u27e8" + _INVISIBLE_NAMES.get(ch, f"U+{ord(ch):04X}") + "\u27e9")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _fold(t: str) -> str:
+    """Letters without diacritics, Cyrillic/Greek look-alikes as Latin."""
+    d = unicodedata.normalize("NFKD", t.translate(_CONFUSABLES))
+    return "".join(ch for ch in d if not unicodedata.combining(ch)).translate(_CONFUSABLES)
+
+
+def _collapse_spaced(t: str) -> str:
+    """"r e f u n d" becomes "refund"."""
+    def join(m):
+        letters = _SPACER.sub("", m.group())
+        return letters if len(letters) >= 3 else m.group()
+    return _SPACED.sub(join, t)
+
+
 def has_negative_context(text: str) -> bool:
     """Refund, reversal, failure or non-receipt wording (English plus the common payment languages)."""
     # cached per text; the key holds the identity of the word lists so that swapping a list (tests do) never reuses a stale answer
     return _negative(text, id(NEGATIVE_WORDS), id(LONG_STEMS), id(SUBSTRINGS), id(PHRASES), id(_CREDIT_NOTE))
 
 
+@lru_cache(maxsize=16)
+def _folded_lists(*_ids):
+    return (frozenset(_fold(w) for w in NEGATIVE_WORDS), tuple(_fold(w) for w in LONG_STEMS),
+            tuple(_fold(w) for w in SUBSTRINGS), tuple(tuple(_fold(x) for x in ph) for ph in PHRASES))
+
+
 @lru_cache(maxsize=131072)
 def _negative(text: str, *_lists) -> bool:
-    t = _nfkc(text).casefold().replace("\u2019", "'")
-    if not t:
+    base = _strip_invisible(_nfkc(text)).casefold().replace("\u2019", "'")
+    if not base:
         return False
-    if any(sub in t for sub in SUBSTRINGS):
+    spaced = _collapse_spaced(base)
+    variants = {base, _fold(base), spaced, _fold(spaced)}
+    folded_lists = _folded_lists(*_lists)
+    for v in variants:
+        if _check(v, NEGATIVE_WORDS, LONG_STEMS, SUBSTRINGS, PHRASES) or _check(v, *folded_lists):
+            return True
+    return False
+
+
+def _check(t: str, words, stems, substrings, phrases) -> bool:
+    if any(sub in t for sub in substrings):
         return True
     t = t.replace("n't", " not")
-    words = [m.group() for m in _WORD.finditer(t)]
-    wordset = set(words)
-    if wordset & NEGATIVE_WORDS:
+    ws = [m.group() for m in _WORD.finditer(t)]
+    wordset = set(ws)
+    if wordset & words:
         return True
-    if any(stem in t for stem in LONG_STEMS):
+    if any(stem in t for stem in stems):
         return True
-    for phrase in PHRASES:
+    for phrase in phrases:
         if phrase[0] not in wordset:
             continue
         n = len(phrase)
-        if any(tuple(words[i:i + n]) == phrase for i in range(len(words) - n + 1)):
+        if any(tuple(ws[i:i + n]) == phrase for i in range(len(ws) - n + 1)):
             return True
-    return any(w == "credit" and i + 1 < len(words) and words[i + 1] in _CREDIT_NOTE for i, w in enumerate(words))
+    return any(w == "credit" and i + 1 < len(ws) and ws[i + 1] in _CREDIT_NOTE for i, w in enumerate(ws))
 
 
 # ---------------------------------------------------------------- company names

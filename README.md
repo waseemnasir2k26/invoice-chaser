@@ -6,15 +6,15 @@
 
 **The client is three weeks late, chasing feels awkward, so you don't, and the money sits.**
 
-**It finds the payments, you confirm with one command, it never marks a client paid or chases a paid client on a guess.**
+**It finds the payments, you confirm with one command. It never marks paid on a guess, never chases a client who paid.**
 
-Point this at your invoice list and your Wise, Payoneer or bank export. It matches payments to invoices and shows each match with its reason and the exact payment row. You review the list and confirm what is right. It writes a reminder draft, in the right tone for how late the invoice is, only for invoices where it found no payment at all. It never sends anything, and your data never leaves your machine: no account, no SaaS login.
-
-It never suggests paid on a near match of an id or a name: 3,360 adversarial cases in the test suite (near-miss ids and names, refunds in many languages, failed payments, future dates, shared prices). Each scenario is executed and logged by `tests/test_adversarial.py`, and a test compares that logged count with this number. One deliberate exception: a payment that carries your exact invoice id is suggested even if the payer is someone else (you see the payer and decide). If it is not sure it says why and waits for you, and a waiting suggestion never hides an unpaid invoice for long: see "stuck" below.
-
-![The loop: run, review.html, confirm, run again](docs/flow.png)
-
-![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
+| What it will not do | What it does instead |
+| --- | --- |
+| Mark an invoice paid by itself | Suggests it with the exact payment row and the reason. Only `confirm` writes "paid". |
+| Chase an invoice that has a suggested payment | Waits for your confirm or reject, and flags it STUCK after 7 days so it cannot hide. |
+| Trust a refund, a failed or a repeated payment | Holds it in "needs review" and says why. |
+| Send an email | Writes `.eml` drafts for you to read, edit and send. |
+| Upload anything | Everything stays on your machine. No account, no SaaS login. |
 
 ```bash
 git clone https://github.com/waseemnasir2k26/invoice-chaser.git && cd invoice-chaser
@@ -22,7 +22,17 @@ pip install .
 invoice-chaser demo
 ```
 
-Then open `out/review.html` in your browser (macOS `open`, Windows `start`, Linux `xdg-open`). The top of the page, "Confirm these", has one copy-paste command per suggested payment; `invoice-chaser confirm --all-strong` shows the list and asks y/N. Python 3.10+, no dependencies. For your own data: `invoice-chaser run --invoices invoices.csv --wise wise.csv --out out` (details below).
+Open `out/review.html` (macOS `open`, Windows `start`, Linux `xdg-open`): the top of the page has one copy-paste command per suggested payment. Python 3.10+, no dependencies.
+
+![The loop: run, review.html, confirm, run again](docs/flow.png)
+
+Point this at your invoice list and your Wise, Payoneer or bank export. It matches payments to invoices and shows each match with its reason and the exact payment row. You review the list and confirm what is right. It writes a reminder draft, in the right tone for how late the invoice is, only for invoices where it found no payment at all. It never sends anything, and your data never leaves your machine: no account, no SaaS login.
+
+It never suggests paid on a near match of an id or a name: 3,360 adversarial cases in the test suite (near-miss ids and names, refunds in many languages, failed payments, future dates, shared prices). Each scenario is executed and logged by `tests/test_adversarial.py`, and a test compares that logged count with this number. One deliberate exception: a payment that carries your exact invoice id is suggested even if the payer is someone else (you see the payer and decide). If it is not sure it says why and waits for you, and a waiting suggestion never hides an unpaid invoice for long: see "stuck" below.
+
+![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
+
+The top of the page, "Confirm these", has one copy-paste command per suggested payment; `invoice-chaser confirm --all-strong` shows the list and asks y/N. Python 3.10+, no dependencies. For your own data: `invoice-chaser run --invoices invoices.csv --wise wise.csv --out out` (details below).
 
 ## What it does
 
@@ -41,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.2  as of 2026-10-25
+invoice-chaser 1.1.3  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -233,7 +243,7 @@ Invoices with a missing or invalid email get no draft. They show as "missing ema
 - **Reminders are not legal notices.** The text is a starting point for politeness; it is not legal or financial advice, and late-payment rules differ by country and contract.
 - **Your edits are safe.** drafts.json stores a hash of every draft it wrote. A draft you edited is never deleted or overwritten: the new one is written beside it as `<name>.new.eml` with a warning. Files that are not ours are never touched.
 - A bad row in your CSV is skipped with a warning and the reason (listed in `review.html`); `--strict` aborts instead.
-- Ambiguous dates like `03/04/2026` are read day-first unless you pass `--date-format`.
+- Ambiguous dates like `03/04/2026` are read day-first unless you pass `--date-format`. Timestamps are read as written: a time zone or UTC offset is ignored, so a payment can land a day early or late, which is why matching uses a window of plus or minus one day.
 - The LLM call and the n8n workflow were not exercised against live services.
 
 ## For you if

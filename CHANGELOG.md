@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.3 - 2026-10-25
+
+- **Two real payments are not "repeats".** A payment is only held as a possible repeat of a confirmed one when nothing tells them apart: two different bank transaction ids, or a text that names a different invoice, now mean two payments. Same-day equal payments for two invoices can both be confirmed. A part-payment remainder equal to the deposit with no distinguishing reference is still held (it could be a re-export), and the message says so and offers `mark-paid`; it never suggests `reject` as the remedy.
+- `confirm --all-strong` runs every check for every invoice first, then writes the ledger once, atomically: all or nothing, with the full list of what held it back.
+- **A renamed payer** (ACME LTD to Acme Limited) no longer changes a payment's id (the payer is left out of the hash; it only breaks ties between rows that are otherwise identical) and is recognised as the same company when comparing a repeat. A fully-paid suggestion that only adds up because of an earlier confirmed part-payment is flagged.
+- **Durable files.** The ledger is flushed to disk before it replaces the old one, keeps a `.bak` of the previous version, and cleans temp files left by a killed run. `seen.json` is written the same way; a damaged one is kept as `seen.json.corrupt-<date>` with a warning instead of silently restarting every waiting time.
+- **Hidden refund words.** The refund and failure check strips invisible characters (zero-width space, soft hyphen, word joiner), folds accents and look-alike Cyrillic and Greek letters, and joins spaced-out letters ("r e f u n d"). Invisible characters are shown as <ZWSP> in the confirm display and in `review.html`.
+- README: a first screen of one hook line, a "what it will not do" table, three commands and the loop strip (larger text); a note that timestamps ignore the UTC offset.
+
 ## 1.1.2 - 2026-10-25
 
 - **The re-export trap** (new README section). A confirmed payment is remembered by date, amount, currency and payer as well as by id. A payment that looks like it after a cosmetic re-export is held in needs review as a possible repeat, never counted again, and `confirm` refuses it. Payment ids ignore punctuation, case and spacing.

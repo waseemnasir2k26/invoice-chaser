@@ -47,16 +47,16 @@ def main() -> int:
             return f"<section><h2>{html.escape(title)}</h2><pre>{html.escape(body)}</pre></section>"
 
         doc = f"""<!doctype html><meta charset=utf-8><style>
-body{{margin:0;padding:28px;background:#f5f5f4;font:15px/1.4 system-ui,sans-serif;color:#1c1917;width:1500px}}
+body{{margin:0;padding:20px;background:#f5f5f4;font:18px/1.4 system-ui,sans-serif;color:#1c1917;width:1500px}}
 .grid{{display:grid;grid-template-columns:1fr 1fr;gap:22px}}
 section{{background:#fff;border:1px solid #d6d3d1;border-radius:10px;padding:14px 16px;overflow:hidden}}
-h2{{margin:0 0 8px;font-size:16px}}pre{{margin:0;background:#1c1917;color:#e7e5e4;padding:12px;border-radius:6px;font:13px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap}}
+h2{{margin:0 0 10px;font-size:21px}}pre{{margin:0;background:#1c1917;color:#e7e5e4;padding:12px;border-radius:6px;font:18px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap}}
 img{{width:100%;border:1px solid #d6d3d1;border-radius:6px}}</style>
 <div class=grid>
-{term("1. invoice-chaser demo   (finds the payments, shows its reasons, drafts nothing for suggestions)", shorten(run1, 11))}
+{term("1. invoice-chaser demo   (finds the payments, shows its reasons, drafts nothing for suggestions)", shorten(run1, 9))}
 <section><h2>2. out/review.html   ("Confirm these": one command per suggestion)</h2><img src="data:image/png;base64,{shot}"></section>
 {term("3. invoice-chaser confirm --all-strong --yes   (only this writes paid)", shorten(confirm, 8))}
-{term("4. run again   (confirmed invoices are paid; nothing was marked paid on a guess)", shorten(run2, 11))}
+{term("4. run again   (confirmed invoices are paid; nothing was marked paid on a guess)", shorten(run2, 9))}
 </div>"""
         page2 = browser.new_context(viewport={"width": 1556, "height": 900}, device_scale_factor=2).new_page()
         page2.set_content(doc)
