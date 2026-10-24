@@ -1,0 +1,15 @@
+.env
+.env.*
+out/
+data/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+# real exports stay local; only the synthetic samples are tracked
+*.csv
+!examples/*.csv

@@ -1,0 +1,5 @@
+"TransferWise ID","Date","Amount","Currency","Description","Payment Reference","Running Balance","Exchange From","Exchange To","Exchange Rate","Payer Name","Payee Name","Payee Account Number","Merchant","Card Last Four Digits","Card Holder Full Name","Attachment","Note","Total fees"
+"TRANSFER-1100000001","03-10-2026","1200.00","USD","Received money from Acme Studio Ltd with reference INV-1001","INV-1001","4200.00","","","","Acme Studio Ltd","","","","","","","","0.00"
+"TRANSFER-1100000002","12-10-2026","1000.00","USD","Received money from Northwind Trading with reference INV-1002 deposit","INV-1002 deposit","5200.00","","","","Northwind Trading","","","","","","","","0.00"
+"CARD-1100000003","14-10-2026","-45.00","USD","Card transaction of 45.00 USD issued by Notion","","5155.00","","","","","","","Notion","1234","Sample Holder","","","0.00"
+"TRANSFER-1100000004","20-10-2026","75.00","USD","Received money from Random Person","","5230.00","","","","Random Person","","","","","","","","0.00"

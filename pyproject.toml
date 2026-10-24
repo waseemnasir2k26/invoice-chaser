@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-chaser"
+version = "1.0.0"
+description = "Match incoming payments to open invoices and draft polite, escalating reminders. Local, file-based, never sends."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Waseem Nasir", email = "info@skynetjoe.com" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+invoice-chaser = "invoice_chaser.cli:main"
+
+[tool.setuptools]
+packages = ["invoice_chaser"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

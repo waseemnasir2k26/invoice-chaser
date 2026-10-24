@@ -1,0 +1,97 @@
+{
+  "name": "invoice-chaser weekly drafts",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "Every Monday 09:00: run invoice-chaser, then create Gmail DRAFTS (never sends). Edit the paths in 'Run invoice-chaser', pick your Gmail credential, then activate. See docs/n8n.md.",
+        "height": 120,
+        "width": 420
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Read me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, -140]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [1],
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Every Monday 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "command": "cd /home/you/invoice-chaser && invoice-chaser run --invoices data/invoices.csv --wise data/wise.csv --payoneer data/payoneer.csv --config data/invoice-chaser.json --out out > /dev/null && cat out/drafts.json"
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Run invoice-chaser",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// stdout of the previous node is out/drafts.json: [{to, subject, body, invoice_id, stage}, ...]\nconst raw = $input.first().json.stdout || '[]';\nconst drafts = JSON.parse(raw);\nreturn drafts\n  .filter(d => d.to && d.subject && d.body)\n  .map(d => ({ json: { to: d.to, subject: d.subject, body: d.body, invoice_id: d.invoice_id, stage: d.stage } }));"
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Parse drafts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {
+          "sendTo": "={{ $json.to }}"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Create Gmail draft (not send)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [720, 0],
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_ME", "name": "Gmail account" }
+      }
+    }
+  ],
+  "connections": {
+    "Every Monday 09:00": {
+      "main": [[{ "node": "Run invoice-chaser", "type": "main", "index": 0 }]]
+    },
+    "Run invoice-chaser": {
+      "main": [[{ "node": "Parse drafts", "type": "main", "index": 0 }]]
+    },
+    "Parse drafts": {
+      "main": [
+        [
+          {
+            "node": "Create Gmail draft (not send)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
