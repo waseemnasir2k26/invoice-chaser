@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import assert_no_absolute_paths
 from invoice_chaser.cli import main
 from invoice_chaser.ledger import load_dropped, load_ledger, load_paid, load_rejected
 from invoice_chaser.parsers import ParseOptions, parse_wise
@@ -125,7 +126,8 @@ def test_a_waiting_review_becomes_stuck_and_an_internal_note_is_drafted(tmp_path
     assert "To: me@x.co" in note and "a@acme.example" not in note            # to YOU, never the client
     assert rows["INV-1"]["draft_file"] == ""                                 # and still no reminder to the client
     first = json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8"))
-    assert set(first.values()) == {"2026-10-10"}                             # first_seen is persisted, not reset by later runs
+    assert first == {"inv-1": {"first_seen": "2026-10-10"}}                  # keyed by invoice, persisted, not reset by later runs
+    assert "waiting for your decision for 8 day(s)" in note
 
 
 def test_more_than_30_days_overdue_with_a_suggestion_is_stuck_at_once(tmp_path):
@@ -141,7 +143,7 @@ def test_deciding_ends_the_wait(tmp_path):
     assert main(["mark-paid", "INV-1", "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
     rows = run(tmp_path, today="2026-10-25")
     assert rows["INV-1"]["status"] == "paid" and rows["INV-1"]["stuck"] == ""
-    assert json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8")) == {}
+    assert json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8")) == {}                  # a decision ends the wait
 
 
 def test_a_rejected_suggestion_is_chased_and_says_so(tmp_path):
@@ -232,7 +234,8 @@ def test_review_html_has_no_absolute_paths(tmp_path):
     out = tmp_path / "some folder" / "out"
     assert main(["demo", "--out", str(out)]) == 0
     html = (out / "review.html").read_text(encoding="utf-8")
-    assert str(tmp_path) not in html and not re.search(r"[A-Za-z]:\\\\|/(home|Users|tmp|var)/", html.replace("&#x27;", "'"))
+    assert str(tmp_path) not in html
+    assert_no_absolute_paths(html, "review.html")
     assert "invoice-chaser confirm INV-1001" in html
 
 

@@ -8,6 +8,7 @@ from html import escape
 from pathlib import Path
 
 from .models import InvoiceResult, Payment
+from .shellquote import quote
 
 STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),
                 ("partial_suggested", "Part-payment suggested (waiting for your confirm)"),
@@ -159,7 +160,7 @@ def _markpaid(invoice_id: str, out_hint: str) -> str:
 
 
 def shlex_quote(s: str) -> str:
-    return s if re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", s) else "'" + s.replace("'", "'\''") + "'"
+    return quote(s)
 
 
 def _rows(results: list[InvoiceResult], drafts: dict[str, str], out_hint: str = "out") -> str:

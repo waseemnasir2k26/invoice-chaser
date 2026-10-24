@@ -74,12 +74,27 @@ def test_credit_alone_is_not_a_refund():
     assert one(text="Credit transfer INV-1004 thanks") == SUGGESTED
 
 
-@pytest.mark.parametrize("name", ["Stornoway Ltd", "Returnly", "Voidstar", "Pending Ventures", "Kreditech", "Chargebacks911",
-                                  "Refundly Inc", "Cancelot", "Failsafe Co", "Blockchain Labs", "Denise Holdings", "Retourist"])
-def test_client_names_that_contain_a_refund_word_are_not_blocked(name):
+@pytest.mark.parametrize("name", ["Stornoway Ltd", "Returnly", "Voidstar", "Kreditech", "Refundly Inc", "Cancelot", "Failsafe Co",
+                                  "Blockchain Labs", "Denise Holdings", "Retourist", "Re", "Un", "Ac", "Pend"])
+def test_client_names_that_only_look_like_a_refund_word_are_not_blocked(name):
     assert one(client=name, payer=name, text="") == SUGGESTED                       # path B: the client itself
     assert one(client=name, payer=name, text=f"Received from {name} INV-1004") == SUGGESTED   # path A, name in the text
     assert one(client=name, payer=name, text=f"refund {name} INV-1004") != SUGGESTED          # but a real refund word still blocks
+
+
+@pytest.mark.parametrize("name", ["Refund Ltd", "Pending Ventures", "Chargebacks911", "Failed Banks Inc", "Money Back Guarantee"])
+def test_a_client_whose_own_name_contains_a_refund_word_is_always_a_human_check(monkeypatch, name):
+    why = lambda: match_all([inv("INV-1004", name, issued=ISSUED, due=DUE)],      # noqa: E731
+                            [pay("P1", d=PAID_ON, payer=name, desc=f"Received from {name} INV-1004")], TODAY, Config())[0][0]
+    assert why().status == "needs_review" and "client name contains a refund word: please check" in why().why_not_paid
+    monkeypatch.setattr(matching, "has_negative_context", lambda t: False)       # the check is what holds it back
+    assert why().status == SUGGESTED
+
+
+@pytest.mark.parametrize("name,text", [("Re", "unpaid INV-1004"), ("Un", "unpaid INV-1004"), ("Ac", "chargeback INV-1004"),
+                                       ("Re", "refund INV-1004"), ("Refund Ltd", "INV-1004 refund"), ("Un", "Un unpaid")])
+def test_the_clients_name_is_never_cut_out_of_the_text(name, text):
+    assert one(client=name, payer=name, text=text) != SUGGESTED
 
 
 def test_class_description_and_payer_are_never_glued(monkeypatch):

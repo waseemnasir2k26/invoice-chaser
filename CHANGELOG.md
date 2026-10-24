@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.2 - 2026-10-25
+
+- **The re-export trap** (new README section). A confirmed payment is remembered by date, amount, currency and payer as well as by id. A payment that looks like it after a cosmetic re-export is held in needs review as a possible repeat, never counted again, and `confirm` refuses it. Payment ids ignore punctuation, case and spacing.
+- Identical rows in two exports (or the same file twice) are kept as separate payments and flagged for review instead of being merged into one; identical rows inside one file stay two payments.
+- A client whose own name contains a refund or failure word (Refund Ltd, Pending Ventures, Chargebacks911) is never matched automatically: "client name contains a refund word: please check". The client's name is no longer cut out of the text, which fixes short names (Re, Un, Ac) mangling words.
+- Stuck aging is keyed by invoice and keeps the earliest date, clamped to the real date on this computer, so a future `--today` cannot poison it and a flip between "suggested" and "needs review" keeps the clock running. New `stuck_overdue_days` (default 30). The note to you says "first seen today" instead of "0 day(s)" and shows the days overdue.
+- A migration that drops row-numbered payment references now rolls back the confirmed part-payment tied to them and marks the invoice "re-confirm after upgrade" (never chased for the full amount meanwhile), so a payment cannot be counted twice. `unmark-paid` clears the flag.
+- Nothing shareable names a folder on your computer: `review.html`, `status.csv`, `suggestions.json` and the drafts carry file names only. Full paths live in `out/local-state.json`, for `confirm` on this computer. A test scans every output file for absolute paths.
+- Copy-paste commands quote ids for your shell (PowerShell single quotes on Windows, POSIX quotes elsewhere); ids with control characters get a harmless placeholder.
+- README: the loop as a four-panel strip (`docs/flow.png`, generated from real output by `scripts/make_strip.py`).
+
 ## 1.1.1 - 2026-10-25
 
 Fixes from the first review of 1.1.0.
@@ -13,7 +24,7 @@ Fixes from the first review of 1.1.0.
 
 ## 1.1.0 - 2026-10-25
 
-**Product change: the tool no longer marks anything paid by itself.** Four rounds of review found a new false-paid class in every round (non-English refund words, "payment failed", an earlier settled invoice, ids glued across fields, future dates, short ids like B2, ids inside e-mail addresses, a confirmation that outlived a changed invoice). Piling on rules cannot make an automatic "paid" safe on messy bank text, so the decision is split.
+**Product change: the tool no longer marks anything paid by itself.** Review kept finding a new false-paid class each time (non-English refund words, "payment failed", an earlier settled invoice, ids glued across fields, future dates, short ids like B2, ids inside e-mail addresses, a confirmation that outlived a changed invoice). Piling on rules cannot make an automatic "paid" safe on messy bank text, so the decision is split.
 
 - New statuses: `suggested-paid` and `partial-suggested` (strong evidence, shown with the reason, the confidence and the exact payment row), `needs-review`, `overdue`, `open`. `paid` appears only if `invoices.csv` says so or you ran `confirm` / `mark-paid`.
 - New commands: `confirm INV` (and `confirm --all-strong`, which prints the list and asks y/N unless `--yes`), `reject INV PAYMENT` (never suggested again). `mark-paid` and `unmark-paid` stay.

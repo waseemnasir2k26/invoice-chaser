@@ -55,8 +55,8 @@ FOREIGN_IDS = True
 #   LONG_STEMS      long, distinctive stems (7+ letters) found anywhere inside a word, to cover inflections
 #   SUBSTRINGS      scripts written without spaces or with attached particles (CJK, Thai, Korean, Hindi, Arabic...)
 #   PHRASES         word sequences
-# The client's own name is removed from the text before checking (see strip_client_name), so a client whose
-# name contains one of these (Chargebacks911, Pending Ventures) is not blocked by its own name.
+# A client whose own name contains one of these (Chargebacks911, Pending Ventures, Refund Ltd) is never
+# matched automatically: the matcher reports "client name contains a refund word: please check".
 NEGATIVE_WORDS = frozenset("""
 refund refunds refunded refunding reversal reversals reverse reverses reversed reversing chargeback chargebacks
 return returns returned returning cancel cancels cancelled canceled cancelling canceling cancellation cancellations
@@ -215,22 +215,6 @@ def field_texts(description: str, payer: str) -> list[str]:
     if SEPARATE_FIELDS:
         return [description or "", payer or ""]
     return [f"{description or ''} {payer or ''}"]
-
-
-def strip_client_name(text: str, client: str) -> str:
-    """Remove the client's own name from the text, so that a client called "Pending Ventures" or "Chargebacks911"
-    does not block its own payments."""
-    t = _nfkc(text)
-    if not client:
-        return t
-    names = {_nfkc(client).strip()}
-    words = _nfkc(client).split()
-    while len(words) > 1 and words[-1].casefold().strip(".,") in SUFFIX_CLASS:
-        words.pop()
-        names.add(" ".join(words))
-    for name in sorted((n for n in names if n), key=len, reverse=True):
-        t = re.sub(re.escape(name), " ", t, flags=re.I)
-    return t
 
 
 def has_negative_context(text: str) -> bool:

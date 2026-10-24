@@ -25,6 +25,7 @@ class Config:
     reply_within_days: int = 7  # deadline wording in final/escalation drafts
     ref_prefixes: list[str] = field(default_factory=lambda: ["INV", "INVOICE"])  # ids that start with one of these (INV-1) count as ids; all-digit ids need one too
     decimal_comma: bool | None = None  # None: read only unambiguous amounts; True: 1.234,56; False: 1,234.56
+    stuck_overdue_days: int = 30  # ...or this many days overdue with a suggestion still waiting
     stuck_after_days: int = 7  # a suggestion / review waiting longer than this is flagged STUCK (internal note + banner)
     default_currency: str = ""  # what a bare "$" in your files means, e.g. "USD"
 
@@ -48,6 +49,7 @@ def validate(cfg: Config) -> Config:
     _num("date_window_days", cfg.date_window_days, 1, 3650, integer=True)
     _num("reply_within_days", cfg.reply_within_days, 1, 90, integer=True)
     _num("stuck_after_days", cfg.stuck_after_days, 1, 365, integer=True)
+    _num("stuck_overdue_days", cfg.stuck_overdue_days, 1, 3650, integer=True)
     if (not isinstance(cfg.stage_days, list) or len(cfg.stage_days) != 4
             or not all(isinstance(x, int) and not isinstance(x, bool) and x >= 1 for x in cfg.stage_days)
             or sorted(set(cfg.stage_days)) != list(cfg.stage_days)):

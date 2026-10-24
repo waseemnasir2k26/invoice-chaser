@@ -12,6 +12,8 @@ Point this at your invoice list and your Wise, Payoneer or bank export. It match
 
 It never suggests paid on a near match of an id or a name: 3,360 adversarial cases in the test suite (near-miss ids and names, refunds in many languages, failed payments, future dates, shared prices). Each scenario is executed and logged by `tests/test_adversarial.py`, and a test compares that logged count with this number. One deliberate exception: a payment that carries your exact invoice id is suggested even if the payer is someone else (you see the payer and decide). If it is not sure it says why and waits for you, and a waiting suggestion never hides an unpaid invoice for long: see "stuck" below.
 
+![The loop: run, review.html, confirm, run again](docs/flow.png)
+
 ![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
 
 ```bash
@@ -39,7 +41,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.1  as of 2026-10-25
+invoice-chaser 1.1.2  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -85,7 +87,7 @@ Alex Rivera
 
 ## How matching decides
 
-**The tool never sets an invoice to paid on its own.** A false "paid" would mean a client is never chased; a wrong "overdue" would mean a reminder to someone who paid. Four review rounds showed that no rule set can promise zero of either on messy bank text, so the decision is split:
+**The tool never sets an invoice to paid on its own.** A false "paid" would mean a client is never chased; a wrong "overdue" would mean a reminder to someone who paid. No rule set can promise zero of either on messy bank text, however many rules are added, so the decision is split:
 
 - the **engine** ranks evidence and shows its work (a suggestion with the reason, the confidence and the exact payment row);
 - **you** decide with `invoice-chaser confirm INV-1` (or `confirm --all-strong` after reading the list). Only that writes "paid" to the ledger (`out/sent.json`).
@@ -101,7 +103,7 @@ Strong evidence, which becomes a suggestion, exists in exactly two forms.
 
 What "whole token" means: `INV-1004`, `inv 1004`, `INV#1004`, `(INV-1004)`, `INV-1004.` all count. `INV-1004/2`, `INV-1004.5`, `INV-1004-2`, `INV-1004A`, `XINV-1004`, `INV-10040` and `INV 1004 2` do not. The description and the payer are searched separately, never glued together, and ids inside e-mail addresses and URLs do not count. An id must look like an id: at least 2 letters and 2 digits (`INV-12`, `AB1234`), or start with a prefix in `ref_prefixes` (default `INV` and `INVOICE`, so `INV-1` works); an all-digit id needs 4+ digits and a configured prefix (`INV 2026001`). `A7`, `B2`, `5` and `2024` never count, so "Vitamin B2" and "Deposit for 5 hours" cannot point at an invoice.
 
-Wording that disqualifies a payment: refund, reversal, failure and non-receipt words in about twenty languages (list below, generated from the code, so it cannot drift). It is a long list, not a complete one: anything that slips past it still only becomes a suggestion that you confirm. Short words match only as whole words, so a client called Stornoway, Returnly, Voidstar, Kreditech or Refundly is not mistaken for a refund, and the client's own name is removed from the text before checking, so "Pending Ventures" or "Chargebacks911" can still pay you:
+Wording that disqualifies a payment: refund, reversal, failure and non-receipt words in about twenty languages (list below, generated from the code, so it cannot drift). It is a long list, not a complete one: anything that slips past it still only becomes a suggestion that you confirm. Short words match only as whole words, so a client called Stornoway, Returnly, Voidstar, Kreditech, Re or Un is not mistaken for a refund. The client's name is never cut out of the text. A client whose own name contains one of these words (Refund Ltd, Pending Ventures, Chargebacks911) is never matched automatically: the row says "client name contains a refund word: please check".
 
 <!-- sample:negative-words -->
 ```
@@ -138,6 +140,15 @@ Speed: candidates per invoice are bounded, never an all-pairs scan. Exactly: pay
 
 **Payment ids are stable.** A payment's id is its real transaction id when the export has one, otherwise a hash of the source, date, amount, currency, description and payer. Never a row number, so re-exporting a statement (new rows, other order) cannot move a confirmation or a rejection onto a different client's payment. Ledgers written by 1.1.0 that used row-numbered ids lose those references on the first run, with a warning that stays visible in `review.html`.
 
+## The re-export trap and how it is handled
+
+You download the statement again next week. The file now has new rows, a different order, maybe slightly different wording. Anything that remembers a payment by its position (row 7) would now point at a different client's payment. Here is what keeps that from hurting you:
+
+- **Payment ids never use the row number.** A payment's id is the transaction id when the export has one. Otherwise it is a hash of the source, date, amount, currency, description and payer, with punctuation, capital letters and spacing ignored. New rows or a different order change nothing.
+- **A repeat is recognised even when the wording changed.** When you confirm a payment, the ledger remembers its date, amount, currency and payer. If a later export shows a payment within a day of that date with the same amount, currency and payer but a new id, it is held in **needs review** as "possible repeat of a payment you already confirmed": never counted again, never suggested as new, and `confirm` refuses it. A genuine second payment of the same amount a week later is a different date and is suggested normally.
+- **Identical rows stay separate, but are flagged.** Two genuinely identical payments in one file are two payments. An identical row that shows up in two different exports (or the same file given twice) is kept, not merged, and held for review: one real payment or two? You decide.
+- **Old row-numbered ledger entries are not trusted.** A confirmed part-payment that was tied to row numbers (versions before 1.1.1) is rolled back and the invoice is marked "re-confirm after upgrade", so the same payment cannot be counted twice. It is never chased for the full amount while that is open.
+
 ## The overdue ladder
 
 | Days overdue | Stage        | Intent                                                            |
@@ -167,7 +178,7 @@ invoice-chaser unmark-paid INV-1006          # changed your mind
 invoice-chaser mark-sent INV-1005            # you sent that reminder: the stage is not drafted twice
 ```
 
-All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs.
+All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only.
 
 - **confirm:** records the invoice as paid (or the part-payment as received) with the exact payment ids and a snapshot of the invoice. The payments are used up: they are not suggested for another invoice.
 - **reject:** the next run does not suggest that payment for that invoice again, so the invoice is chased (or shows its next candidate).
@@ -197,7 +208,7 @@ Header matching ignores case, spaces and punctuation, and quoted multi-line fiel
 
 **Verify your own export.** The Wise column names are written from memory of Wise's statement CSV and were not checked against a fresh export; the Payoneer parser guesses by alias and its sample is synthetic. If your export uses different names, the generic `--bank` mapping works for any CSV and takes a minute to write. Please open an issue with the (redacted) header row if a real file fails.
 
-Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `review_threshold`, `auto_threshold` (ordering only), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `ref_prefixes` (default `["INV", "INVOICE"]`), `decimal_comma`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`, `stuck_after_days` (default 7). JSON files may carry a BOM. If `sender_email` is missing you get a warning and a banner in `review.html`.
+Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `review_threshold`, `auto_threshold` (ordering only), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `ref_prefixes` (default `["INV", "INVOICE"]`), `decimal_comma`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`, `stuck_after_days` (default 7), `stuck_overdue_days` (default 30). JSON files may carry a BOM. If `sender_email` is missing you get a warning and a banner in `review.html`.
 
 Invoices with a missing or invalid email get no draft. They show as "missing email" or "invalid email" in `status.csv` and `review.html`, with a warning on stderr. CSV files may be UTF-8, UTF-8 with BOM, UTF-16 or Windows-1252.
 

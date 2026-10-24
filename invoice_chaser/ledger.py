@@ -32,7 +32,7 @@ from pathlib import Path
 
 from .ladder import STAGES
 
-_SECTIONS = ("sent", "paid", "received", "rejected", "dropped")
+_SECTIONS = ("sent", "paid", "received", "rejected", "dropped", "reconfirm")
 
 
 def _read(path: str | Path) -> dict:
@@ -62,8 +62,8 @@ def _read(path: str | Path) -> dict:
         for e in out["rejected"].values():
             if not isinstance(e, list):
                 raise ValueError("rejected entries must be lists")
-        if not isinstance(out["dropped"], dict):
-            raise ValueError("dropped must be an object")
+        if not isinstance(out["dropped"], dict) or not isinstance(out["reconfirm"], dict):
+            raise ValueError("dropped and reconfirm must be objects")
     except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
         raise ValueError(f"{p.name}: not a valid sent ledger ({exc})") from exc
     return out
@@ -144,6 +144,22 @@ def load_dropped(path: str | Path) -> dict[str, list[str]]:
     return _read(path)["dropped"]
 
 
+def load_reconfirm(path: str | Path) -> dict[str, dict]:
+    """Invoices whose confirmed part-payment was rolled back by a migration: they need your confirm again."""
+    return _read(path)["reconfirm"]
+
+
+def load_payment_rows(path: str | Path) -> list[dict]:
+    """Every payment you confirmed, as it looked then: {invoice, key, date, amount, currency, payer}. Used to
+    recognise the same payment again after a cosmetic re-export changed its id."""
+    data = _read(path)
+    rows = []
+    for inv, entry in list(data["paid"].items()) + list(data["received"].items()):
+        for r in entry.get("payment_rows", []):
+            rows.append({"invoice": inv, **r})
+    return rows
+
+
 # Before 1.1.1 a payment without a transaction id was keyed by its ROW NUMBER in the export (wise:wise-3).
 # Row numbers move when you export again, so such a key could land on a different client's payment.
 _ROW_KEY = re.compile(r"^(wise|payoneer|bank):(wise|payoneer|bank)-\d+$")
@@ -151,20 +167,30 @@ _ROW_KEY = re.compile(r"^(wise|payoneer|bank):(wise|payoneer|bank)-\d+$")
 
 def migrate_row_keys(path: str | Path) -> list[str]:
     """Drop ledger entries keyed by a row number. Returns one message per dropped key (also kept in the
-    ledger's "dropped" section, so review.html keeps showing them). A confirmed invoice stays confirmed;
-    only the row-keyed payment reference goes."""
+    ledger's "dropped" section, so review.html keeps showing them).
+
+    A confirmed invoice stays confirmed; only its row-keyed payment reference goes. A confirmed PART-payment is
+    rolled back instead: its amount is no longer tied to any payment we can recognise, and keeping it would count
+    the same payment twice when it is suggested again. The invoice is flagged "re-confirm after upgrade"."""
     p = Path(path)
     if not p.exists():
         return []
     with _locked(path):
         data = _read(path)
         messages = []
-        for inv, entry in list(data["paid"].items()) + list(data["received"].items()):
-            bad = [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]
-            for k in bad:
+        for inv, entry in list(data["paid"].items()):
+            for k in [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]:
                 entry["payments"].remove(k)
                 data["dropped"].setdefault(inv, []).append(k)
                 messages.append(f"{inv}: dropped payment reference {k} from your confirmation (row-numbered ids are not stable)")
+        for inv, entry in list(data["received"].items()):
+            bad = [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]
+            if bad:
+                del data["received"][inv]
+                data["dropped"].setdefault(inv, []).extend(bad)
+                data["reconfirm"][inv] = {"amount": entry["amount"], "date": entry["date"]}
+                messages.append(f"{inv}: your confirmed part-payment of {entry['amount']} was rolled back because it was tied to "
+                                f"row-numbered payment ids ({', '.join(bad)}): re-confirm after upgrade")
         for inv, keys in list(data["rejected"].items()):
             bad = [k for k in keys if _ROW_KEY.match(k)]
             for k in bad:
@@ -192,23 +218,25 @@ def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> No
 
 
 def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "", snapshot: dict | None = None,
-                payments=(), source: str = "mark-paid") -> None:
+                payments=(), source: str = "mark-paid", rows=()) -> None:
     with _locked(path):
         data = _read(path)
         data["paid"][invoice_id] = {"date": when.isoformat(), "note": note, "source": source,
-                                    "payments": list(payments), "snapshot": snapshot or {}}
+                                    "payments": list(payments), "snapshot": snapshot or {}, "payment_rows": list(rows)}
         data["received"].pop(invoice_id, None)  # fully paid now
+        data["reconfirm"].pop(invoice_id, None)
         _write(path, data)
 
 
 def record_received(path: str | Path, invoice_id: str, when: date, amount: Decimal, payments=(),
-                    snapshot: dict | None = None) -> None:
+                    snapshot: dict | None = None, rows=()) -> None:
     if not Decimal(amount).is_finite() or Decimal(amount) < 0:
         raise ValueError(f"received amount {amount!r} must be a finite, non-negative number")
     with _locked(path):
         data = _read(path)
         data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
-                                        "snapshot": snapshot or {}}
+                                        "snapshot": snapshot or {}, "payment_rows": list(rows)}
+        data["reconfirm"].pop(invoice_id, None)
         _write(path, data)
 
 
@@ -227,7 +255,7 @@ def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
         data = _read(path)
         want = invoice_id.strip().lower()
         hit = False
-        for section in ("paid", "received"):
+        for section in ("paid", "received", "reconfirm"):
             for k in [k for k in data[section] if str(k).strip().lower() == want]:
                 del data[section][k]
                 hit = True

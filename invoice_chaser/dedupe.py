@@ -8,8 +8,50 @@
 """
 from __future__ import annotations
 
+import re
+from datetime import date
+from decimal import Decimal
+
 from .matching import norm_name
 from .models import Payment
+
+
+def _squash(t: str) -> str:
+    return " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())
+
+
+def payment_row(p) -> dict:
+    """What the ledger remembers about a confirmed payment, to recognise it again if a re-export changes its id."""
+    return {"key": (p.get("key") or f"{p.get('source', '')}:{p['id']}") if isinstance(p, dict) else f"{p.source}:{p.id}",
+            "date": (p["date"] if isinstance(p, dict) else p.date.isoformat()),
+            "amount": str(p["amount"] if isinstance(p, dict) else p.amount),
+            "currency": p["currency"] if isinstance(p, dict) else p.currency,
+            "payer": _squash(p["payer"] if isinstance(p, dict) else p.payer),
+            "text": "" if (p["payer"] if isinstance(p, dict) else p.payer) else
+            _squash(p["description"] if isinstance(p, dict) else p.description)[:80]}
+
+
+def repeat_of(p, rows: list[dict]) -> dict | None:
+    """The confirmed payment this one looks like (date within a day, same amount, currency and payer), or None.
+    A cosmetic change to the description or punctuation does not make a payment a new one."""
+    me = payment_row(p)
+    try:
+        d, amt = date.fromisoformat(me["date"]), Decimal(me["amount"])
+    except (ValueError, ArithmeticError):
+        return None
+    for r in rows:
+        try:
+            if abs((date.fromisoformat(r["date"]) - d).days) > 1 or Decimal(r["amount"]) != amt:
+                continue
+        except (ValueError, ArithmeticError, KeyError):
+            continue
+        if r.get("currency") != me["currency"]:
+            continue
+        if me["payer"] and r.get("payer") == me["payer"]:
+            return r
+        if not me["payer"] and not r.get("payer") and me["text"] and r.get("text") == me["text"]:
+            return r
+    return None
 
 
 def _same_payer(a: Payment, b: Payment) -> bool:

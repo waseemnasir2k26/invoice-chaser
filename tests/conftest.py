@@ -27,3 +27,13 @@ def cfg():
 @pytest.fixture
 def examples():
     return EX
+
+
+ABSOLUTE_PATH = __import__("re").compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|(?<![\w.:-])/(?:home|Users|tmp|var|private|mnt|opt|root)/", __import__("re").I)
+
+
+def assert_no_absolute_paths(text: str, where: str = "") -> None:
+    """Nothing shareable may name a folder on this computer: no Windows drive path, no /home, /Users, /tmp..."""
+    text = text.replace("&#x27;", "'").replace("&amp;", "&")
+    m = ABSOLUTE_PATH.search(text)
+    assert m is None, f"absolute path in {where or 'output'}: {text[max(0, m.start() - 30):m.end() + 40]!r}"

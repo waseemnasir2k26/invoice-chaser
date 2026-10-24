@@ -28,7 +28,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 
 from .config import Config
-from .decision import IdIndex, company_key, field_texts, has_negative_context, same_company, strip_client_name
+from .decision import IdIndex, company_key, field_texts, has_negative_context, same_company
 from .ladder import days_overdue, stage_for
 from .models import Invoice, InvoiceResult, Match, Payment
 
@@ -177,8 +177,9 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
     more = conv > inv.amount and not within
     company = same_company(inv.client, pay.payer)
     neg = info.neg
-    if neg:  # the client's own name may contain such a word (Pending Ventures, Chargebacks911): remove it and look again
-        neg = any(has_negative_context(strip_client_name(t, inv.client)) for t in info.texts)
+    # No cleverness: the client's name is never cut out of the text. A client whose own name contains a refund or failure
+    # word (Refund Ltd, Pending Ventures) is a human check every time.
+    client_neg = neg and has_negative_context(inv.client)
 
     # ---- the evidence table (decision.py): STRONG evidence becomes a suggestion, never "paid" ----
     path_a = unique and not info.foreign and not neg and pay.amount > 0 and (within or less)
@@ -223,7 +224,9 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
             parts.append(f"payment {problem}")
         if pay.suspect:
             parts.append(pay.suspect)
-        if neg:
+        if client_neg:
+            parts.append("client name contains a refund word: please check")
+        elif neg:
             parts.append("the payment mentions a refund, reversal, failure or non-receipt")
         if info.foreign:
             parts.append("the payment names an invoice id that is not in your invoice list (" + ", ".join(sorted(info.foreign)) + ")")
