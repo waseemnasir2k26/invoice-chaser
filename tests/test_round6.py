@@ -56,22 +56,27 @@ def test_punctuation_case_and_spacing_do_not_change_a_payment_id(tmp_path):
     assert parse_wise(f)[0].id == a
 
 
-def test_a_reworded_re_export_is_followed_not_counted_twice(tmp_path, capsys):
+def test_a_reworded_re_export_is_an_orphaned_decision_nothing_is_repaired_for_you(tmp_path, capsys):
     setup(tmp_path, HALF, ROW)
     assert run(tmp_path)["INV-1"]["status"] == "partial_suggested"
     confirm(tmp_path, "INV-1")
     rows = run(tmp_path)
     assert rows["INV-1"]["status"] == "partial" and rows["INV-1"]["outstanding"] == "500.00"
-    # the bank re-exports with different wording: a new id for the SAME payment (same date, amount, currency and payer).
-    # The old id is gone, so the confirmation is re-bound to the new id, with a warning, and the 500 is not counted again.
+    # the bank re-exports with different wording: a new id for what looks like the SAME payment (same date, amount, currency, payer).
     (tmp_path / "w.csv").write_text(WISE_HEAD + '"","05-10-2026","500.00","USD","Deposit received for invoice INV-1","INV-1","Acme Studio"\n',
                                     encoding="utf-8")
     capsys.readouterr()
     rows = run(tmp_path)
-    assert "was re-bound to" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "CRITICAL [ORPHANED_DECISION]" in err and "Nothing is re-bound automatically" in err and "invoice-chaser rebind" in err
+    assert rows["INV-1"]["status"] == "needs_review" and rows["INV-1"]["draft_file"] == ""      # held: no reminder, no second suggestion
+    assert load_received(tmp_path / "out" / "sent.json")["INV-1"]["amount"] == "500.00"        # the ledger was not touched
+    # you decide: it is the same payment
+    new_key = json.loads((tmp_path / "out" / "orphans.json").read_text(encoding="utf-8"))["orphans"][0]["candidates"][0]["key"]
+    assert main(["rebind", "wise:" + load_payment_rows(tmp_path / "out" / "sent.json")[0]["key"].split(":", 1)[1], new_key,
+                 "--out", str(tmp_path / "out")]) == 0
+    rows = run(tmp_path)
     assert rows["INV-1"]["status"] == "partial" and rows["INV-1"]["outstanding"] == "500.00"
-    assert load_received(tmp_path / "out" / "sent.json")["INV-1"]["amount"] == "500.00"
-    assert run(tmp_path)["INV-1"]["status"] == "partial"                      # and the re-binding stuck: nothing to say any more
 
 
 def test_a_reworded_copy_next_to_the_original_is_held_as_a_repeat(tmp_path):

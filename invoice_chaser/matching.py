@@ -428,7 +428,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         p = payments[pi]
         confirmed[inv.id].append(Match(inv.id, p.id, p.date, p.description, s.confidence, s.reason, alloc,
                                        payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
-                                       named=tuple(sorted(infos[pi].ids))))
+                                       named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
 
     for s, inv, pi in pairs:
         if s.auto or rem[pi] <= 0:
@@ -439,7 +439,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         suggested[inv.id].append(Match(inv.id, p.id, p.date, p.description, s.confidence, s.reason,
                                        blocker=s.blocker or f"confidence {s.confidence} is below {cfg.auto_threshold}",
                                        payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
-                                       named=tuple(sorted(infos[pi].ids))))
+                                       named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
 
     results = []
     for inv in invoices:

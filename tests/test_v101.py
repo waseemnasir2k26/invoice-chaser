@@ -118,7 +118,7 @@ def test_bad_email_means_no_draft_and_visible_status(tmp_path, capsys, email, la
     row = next(csv.DictReader(open(out / "status.csv", encoding="utf-8")))
     assert row["draft_status"] == label and row["draft_file"] == ""
     assert label in (out / "review.html").read_text(encoding="utf-8")
-    assert f"WARNING: X-1 (Zed Corp): {label}" in capsys.readouterr().err
+    assert f"WARNING [EMAIL_MISSING]: X-1 (Zed Corp): {label}" in capsys.readouterr().err
 
 
 # ---- config ------------------------------------------------------------------------

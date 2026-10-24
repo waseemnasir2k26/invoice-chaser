@@ -38,7 +38,7 @@ def _shared_price(n_inv, n_pay, prices, seed=3):
 def test_shared_price_points_stay_fast_and_safe(n_inv, n_pay, prices, limit):
     invs, pays = _shared_price(n_inv, n_pay, prices)
     t0 = time.perf_counter()
-    results, _ = match_all(invs, dedupe_payments(pays, lambda m: None), TODAY, Config())
+    results, _ = match_all(invs, dedupe_payments(pays, lambda m, c="": None), TODAY, Config())
     dt = time.perf_counter() - t0
     assert dt < limit, f"{n_inv}x{n_pay} took {dt:.1f}s"
     assert not [r for r in results if r.status in ("paid", "suggested_paid", "partial_suggested")]   # nobody is identified

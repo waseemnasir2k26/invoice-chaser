@@ -70,7 +70,7 @@ def test_identical_rows_stay_two_payments_but_the_same_row_in_two_files_is_one(t
     both = parse_wise(f, opts) + parse_wise(g, opts)
     assert len(both) == 3 and len({p.id for p in both}) == 3 and opts.cross_file_ids() == {p.id for p in both}
     msgs = []
-    assert len(dedupe_payments(both, msgs.append)) == 3 and not msgs        # only a REAL transaction id twice is dropped
+    assert len(dedupe_payments(both, lambda m, c="": msgs.append(m))) == 3 and not msgs        # only a REAL transaction id twice is dropped
 
 
 def test_reexport_cannot_move_a_confirmation_onto_another_clients_payment(tmp_path):

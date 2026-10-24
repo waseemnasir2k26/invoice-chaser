@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.5  as of 2026-10-25
+invoice-chaser 1.1.6  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -133,7 +133,8 @@ Credit notes: the word 'credit' followed by one of:
 Everything else is **needs review**: no suggestion to confirm, no reminder drafted, and `status.csv` / `review.html` say exactly why in a *why not paid* column (for example `payer 'Acme Holdings' is not exactly 'Acme'`, or `the payment names several invoices (INV-1, INV-2)`). Each such row shows a copy-paste `invoice-chaser mark-paid INV-1006` for when you have checked yourself. Also held for review, never guessed:
 
 - the same payment seen in two exports under different payer names ("Acme Ltd" in Wise, "Jane Okafor" in the bank file): same amount and currency, within two days, from two different exports, and the same invoice id named in both (or both payers blank). Both are held in needs review. Name the one you checked with `invoice-chaser confirm INV-9 --payment <id>` (name both if both are real); it never counts the invoice twice;
-- a duplicate invoice id (case differs): two invoices whose ids differ only by capitals (`INV-6001` and `inv-6001`): both wait in needs review, with no reminder to either client, until you give them unique ids;
+- (Once you have named the payment with `--payment`, those payments are consumed and the hold does not fire again; the other half of the pair is printed with the exact `reject` / `confirm` commands.)
+- a duplicate invoice id (case differs): two invoices whose ids differ only by capitals (`INV-6001` and `inv-6001`): both wait in needs review, with no reminder to either client, until you give them unique ids. `mark-paid`, `confirm`, `reject` and `mark-sent` refuse such an id ("invoice ids are not unique") until invoices.csv is fixed;
 - a payment that names more than 3 invoices (it is never paired with any of them), or an invoice named by more than 20 payments;
 - a possible duplicate: the same transfer id twice in one export (the second row is dropped, with a warning), or the same amount, currency, payer and date (plus or minus one day) in two exports (both flagged);
 - a payment dated before the invoice was issued, far after it, or in the future. Never dropped silently: listed in `review.html` as "payments outside the invoice date window (check date format)", because a day/month mix-up is the usual cause. Use `--date-format dmy|mdy|ymd`; if every date in a file could be read either way, you get a warning.
@@ -160,6 +161,17 @@ You download the statement again next week. The file now has new rows, a differe
 - **A repeat is recognised even when the wording changed.** When you confirm a payment, the ledger remembers its date, amount, currency and payer. If a later export shows a payment within a day of that date with the same amount, currency and company but a new id, it is held in **needs review** as "possible repeat of a payment you already confirmed": never counted again, never suggested as new, and `confirm` refuses it. It is NOT a repeat when the bank gave the two payments different transaction ids or the text names a different invoice. A genuine second payment of the same amount a week later is a different date and is suggested normally.
 - **Identical rows stay separate, but are flagged.** Two genuinely identical payments in one file are two payments. An identical row that shows up in two different exports (or the same file given twice) is kept, not merged, and held for review: one real payment or two? You decide.
 
+## Orphaned decisions: it never repairs, it asks
+
+A decision you made (a confirmed payment, a rejected payment, a confirmed invoice) can end up pointing at something that is not in today's data: the bank changed how it words or numbers a payment, or you renamed an invoice id in `invoices.csv`. The tool never repairs that for you. Re-attaching a decision automatically is how a confirmation ends up on a different client's payment, and a paid client gets chased. Instead:
+
+- if a **look-alike** exists (same date, amount, currency and payer company, or an invoice with the same client, amount and due date), you get a critical `ORPHANED_DECISION` warning. It lists what you decided, the invoice snapshot, the look-alike candidates with a safety check (a payment that names another invoice, or carries a different bank transaction id, fails it), and the exact commands;
+- the invoices involved, and any invoice a candidate names, are held in needs review with **no reminder** until you resolve it. The candidates are never suggested for anything meanwhile;
+- `invoice-chaser rebind <old> <new>` attaches the decision to the new payment (or the renamed invoice), after the same checks as the repeat check, and refuses if they fail;
+- `invoice-chaser forget <old>` drops the stale decision.
+
+If a confirmed payment is simply not in today's exports (a shorter or newer statement) and nothing looks like it, nothing is wrong and nothing is said.
+
 ## The overdue ladder
 
 | Days overdue | Stage        | Intent                                                            |
@@ -184,13 +196,15 @@ The text does not threaten legal action. Add that yourself where it is appropria
 invoice-chaser confirm INV-1002              # accept the suggested payment (a part-payment is recorded as a part-payment)
 invoice-chaser confirm --all-strong          # list every strong suggested-paid invoice, ask y/N (--yes to skip the question)
 invoice-chaser reject INV-1002 W1            # that payment is NOT for this invoice: never suggested for it again
-invoice-chaser confirm INV-9 --payment W9    # you name the payment(s) yourself; also works on a held suggestion
+invoice-chaser confirm INV-9 --payment W9    # you name the payment(s) yourself; also works on a held suggestion. If two exports use the same id, say wise:W9 or bank:W9
+invoice-chaser rebind <old> <new>            # you decided an orphaned decision belongs to the new payment / renamed invoice (checked first)
+invoice-chaser forget <old>                  # drop an orphaned decision
 invoice-chaser mark-paid INV-1006 --note "checked bank"   # you checked yourself; no suggestion needed
 invoice-chaser unmark-paid INV-1006          # changed your mind
 invoice-chaser mark-sent INV-1005            # you sent that reminder: the stage is not drafted twice
 ```
 
-All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. That is already how it works today when an id changes: a confirmation or rejection whose payment id is no longer in your exports, but whose fingerprint matches one that is, is re-bound to that payment, with a warning.
+All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. Today nothing is repaired for you (see "Orphaned decisions" below), and `invoice-chaser ledger reset --backup` refuses a path with no ledger in it, never overwrites an earlier backup, and compares the copy byte for byte with the original before it resets anything.
 
 - **confirm:** records the invoice as paid (or the part-payment as received) with the exact payment ids and a snapshot of the invoice. The payments are used up: they are not suggested for another invoice.
 - **reject:** the next run does not suggest that payment for that invoice again, so the invoice is chased (or shows its next candidate).
@@ -246,7 +260,7 @@ Invoices with a missing or invalid email get no draft. They show as "missing ema
 - **Reminders are not legal notices.** The text is a starting point for politeness; it is not legal or financial advice, and late-payment rules differ by country and contract.
 - **Your edits are safe.** drafts.json stores a hash of every draft it wrote. A draft you edited is never deleted or overwritten: the new one is written beside it as `<name>.new.eml` with a warning. Files that are not ours are never touched.
 - A bad row in your CSV is skipped with a warning and the reason (listed in `review.html`); `--strict` aborts instead. An invoice file with no usable rows stops with "no invoices found" and says why.
-- Warnings are one summary at the end: the ones that need a decision are printed in full, routine ones (ignored refund rows, skipped rows) are counted as "routine notices", and everything is in `review.html`. The missing-`sender_email` warning is printed once per output folder.
+- Every warning has a CODE and a severity, set where it is raised, never guessed from its text (a payer called "Evil (row skipped)" cannot make anything look routine). **Critical** (`ORPHANED_DECISION`, `ID_COLLISION`, `POSSIBLE_DOUBLE_COUNT`, `INVOICE_ROW_DROPPED`, `DUPLICATE_INVOICE_ID`, `CHANGED_INVOICE`) and **warning** notices are printed in full with their code; **routine** ones (`NEGATIVE_ROWS`, `ROWS_SKIPPED_STATUS`, kept drafts) are counted, and the summary counts everything by code. A dropped invoice row is always critical and is named by line and id. Everything is in `review.html`. The missing-`sender_email` warning is printed once per output folder.
 - Ambiguous dates like `03/04/2026` are read day-first unless you pass `--date-format`. Timestamps are read as written: a time zone or UTC offset is ignored, so a payment can land a day early or late, which is why matching uses a window of plus or minus one day.
 - The LLM call and the n8n workflow were not exercised against live services.
 

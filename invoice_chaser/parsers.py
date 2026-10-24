@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .decision import company_key
 from .models import Invoice, Payment
+from .notices import Notice
 
 
 class ParseError(ValueError):
@@ -33,7 +34,7 @@ class ParseOptions:
     default_currency: str = ""  # what a bare "$" means
     strict: bool = False  # True: a bad row aborts the run instead of being skipped with a warning
     decimal_comma: bool | None = None  # None: refuse ambiguous amounts like 1,234 / 1.500
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[Notice] = field(default_factory=list)
     ignored: list[Payment] = field(default_factory=list)  # negative rows: refunds, fees, withdrawals
     # stable payment ids: see _Ids / finalize_ids
     pending: list = field(default_factory=list)
@@ -41,9 +42,9 @@ class ParseOptions:
     files_parsed: int = 0
     _cross: set = field(default_factory=set)
 
-    def warn(self, msg: str) -> None:
+    def warn(self, msg: str, code: str = "NOTE") -> None:
         if msg not in self.warnings:
-            self.warnings.append(msg)
+            self.warnings.append(Notice(msg, code))
 
     def cross_file_ids(self) -> set:
         """Ids of payments whose exact row (same payer too) appears in more than one file of this run."""
@@ -130,7 +131,7 @@ def note_date_ambiguity(path, raws: list[str], opts: ParseOptions) -> None:
             ambiguous += 1
     if ambiguous and not decisive:
         opts.warn(f"{Path(path).name}: every dated row could be day-first or month-first; read as day-first. "
-                  f"Check the dates, or pass --date-format dmy|mdy|ymd.")
+                  f"Check the dates, or pass --date-format dmy|mdy|ymd.", "DATE_AMBIGUOUS")
 
 
 # ---------------------------------------------------------------- amounts and currency
@@ -240,12 +241,12 @@ def norm_currency(raw: str, opts: ParseOptions, where: str) -> str:
         if opts.default_currency:
             return opts.default_currency
         opts.warn(f"{where}: currency '$' is ambiguous (USD, AUD, CAD...); set default_currency in the config. "
-                  f"Those rows will not match anything.")
+                  f"Those rows will not match anything.", "CURRENCY_UNKNOWN")
         return "$"
     letters = re.sub(r"[^A-Za-z]", "", s).upper()
     if len(letters) == 3:
         return letters
-    opts.warn(f"{where}: currency {raw!r} is not an ISO code (like USD, EUR, GBP); rows with it will not match anything.")
+    opts.warn(f"{where}: currency {raw!r} is not an ISO code (like USD, EUR, GBP); rows with it will not match anything.", "CURRENCY_UNKNOWN")
     return u or "?"
 
 
@@ -299,10 +300,17 @@ def _get(r: dict, col: str | None) -> str:
     return (r.get(col) or "").strip() if col else ""
 
 
-def _bad_row(opts: ParseOptions, path, n: int, err: Exception) -> None:
+def _bad_row(opts: ParseOptions, path, n: int, err: Exception, invoice: bool = False, ident: str = "") -> None:
+    """A row that cannot be used. A dropped INVOICE is critical (it will not be matched, chased or shown), named by line and id;
+    a dropped payment row is a warning (a payment may be missing)."""
     if opts.strict:
-        raise ParseError(f"{path} row {n}: {err}") from err
-    opts.warn(f"{Path(path).name} row {n}: {err} (row skipped)")
+        raise ParseError(f"{path} line {n}: {err}") from err
+    name = Path(path).name
+    if invoice:
+        opts.warn(f"{name} line {n}" + (f" (invoice id {ident!r})" if ident else "") + f": {err}. This invoice was DROPPED: it is not matched, "
+                  f"not chased and not in the report. Fix the row and run again.", "INVOICE_ROW_DROPPED")
+    else:
+        opts.warn(f"{name} line {n}: {err}. This payment row was skipped, so a payment may be missing from the matching.", "PAYMENT_ROW_DROPPED")
 
 
 # ---------------------------------------------------------------- invoices
@@ -351,13 +359,14 @@ def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[In
             if inv.amount <= 0:
                 raise ParseError("amount must be positive")
         except ParseError as e:
-            _bad_row(opts, path, n, e)
+            _bad_row(opts, path, n, e, invoice=True, ident=_get(r, c_id))
             continue
         norm_id = " ".join(inv.id.casefold().split())
         if norm_id in seen_norm:  # INV-6001 and inv-6001: never merge them silently, and never guess which one is meant
             opts.case_dup_ids.add(norm_id)
             opts.warn(f"{Path(path).name} row {n}: duplicate invoice id (case differs): {seen_norm[norm_id]!r} and {inv.id!r}. Both are held in "
-                      f"needs review and no reminder is drafted for either. Next step: give each invoice its own id in the file, then run again.")
+                      f"needs review and no reminder is drafted for either. Next step: give each invoice its own id in the file, then run again.",
+                      "DUPLICATE_INVOICE_ID")
         else:
             seen_norm[norm_id] = inv.id
         seen.add(inv.id)
@@ -379,9 +388,9 @@ def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skippe
     neg = [p for p in opts.ignored if p.source == Path(path).name]
     if neg:
         opts.warn(f"{Path(path).name}: {len(neg)} negative row(s) ignored (refunds, fees, withdrawals); they are NOT netted "
-                  f"against invoices. Listed in review.html.")
+                  f"against invoices. Listed in review.html.", "NEGATIVE_ROWS")
     if skipped_status:
-        opts.warn(f"{Path(path).name}: {skipped_status} row(s) skipped because their status is not completed (pending, failed...).")
+        opts.warn(f"{Path(path).name}: {skipped_status} row(s) skipped because their status is not completed (pending, failed...).", "ROWS_SKIPPED_STATUS")
     return out
 
 

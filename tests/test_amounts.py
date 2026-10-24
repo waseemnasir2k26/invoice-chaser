@@ -67,7 +67,7 @@ def test_bad_amount_row_is_skipped_with_the_reason(tmp_path):
     invs = read_invoices(f, o)
     assert [(i.id, i.amount) for i in invs] == [("C", D("1.5")), ("E", D("500"))]
     text = " ".join(o.warnings)
-    assert "row 2" in text and "row 3" in text and "row 5" in text and "ambiguous amount" in text and "row skipped" in text
+    assert "line 2" in text and "line 3" in text and "line 5" in text and "ambiguous amount" in text and "DROPPED" in text
     assert {i.id: i.amount for i in read_invoices(f, ParseOptions(decimal_comma=False)) if i.id == "D"} == {"D": D("1234")}
     with pytest.raises(ParseError):
         read_invoices(f, ParseOptions(strict=True))

@@ -198,18 +198,89 @@ def load_payment_rows(path: str | Path) -> list[dict]:
     return rows
 
 
-def reset_ledger(path: str | Path, backup: bool) -> Path | None:
-    """Start a fresh ledger. With backup=True the old file is kept as <name>.pre-release-<timestamp>. Returns the backup path."""
+def reset_ledger(path: str | Path, backup: bool) -> Path:
+    """Start a fresh ledger. Refuses if there is none at that path (a mistyped --ledger), and without backup=True. The old file is copied to
+    <name>.pre-release-<timestamp>[-n] (never over an existing file), and the copy is compared byte for byte with the original before
+    anything is reset. Returns the backup path."""
     p = Path(path)
-    kept = None
+    if not p.exists():
+        raise ValueError(f"no ledger at {p.name} (check the --out / --ledger path): nothing to reset")
+    if not backup:
+        raise ValueError("resetting deletes your decisions (confirmed payments, rejections, sent reminders): add --backup to keep a copy")
     with _locked(path):
-        if p.exists():
-            if not backup:
-                raise ValueError("resetting deletes your decisions (confirmed payments, rejections, sent reminders): add --backup to keep a copy")
-            kept = p.with_name(f"{p.name}.pre-release-{time.strftime('%Y%m%d-%H%M%S')}")
-            shutil.copy2(p, kept)
+        original = p.read_bytes()
+        stamp, n = time.strftime("%Y%m%d-%H%M%S"), 0
+        while True:
+            kept = p.with_name(f"{p.name}.pre-release-{stamp}" + (f"-{n}" if n else ""))
+            if not kept.exists():
+                break
+            n += 1
+        kept.write_bytes(original)
+        if kept.read_bytes() != original or p.read_bytes() != original:
+            kept.unlink(missing_ok=True)
+            raise ValueError("the backup did not match the ledger, or the ledger changed while it was being copied: nothing was reset, try again")
         _write(path, _empty())
     return kept
+
+
+def forget_key(path: str | Path, key: str) -> bool:
+    """Remove one payment reference from every decision: the invoice stays confirmed, a rejection of that payment is lifted."""
+    hit = False
+    with _locked(path):
+        data = _read(path)
+        for section in ("paid", "received"):
+            for entry in data[section].values():
+                if key in entry.get("payments", []):
+                    entry["payments"] = [k for k in entry["payments"] if k != key]
+                    hit = True
+                rows = [r for r in entry.get("payment_rows", []) if r.get("key") != key]
+                hit = hit or len(rows) != len(entry.get("payment_rows", []))
+                entry["payment_rows"] = rows
+        for inv in list(data["rejected"]):
+            if key in data["rejected"][inv]:
+                data["rejected"][inv] = [k for k in data["rejected"][inv] if k != key]
+                hit = True
+                if not data["rejected"][inv]:
+                    del data["rejected"][inv]
+        for inv in list(data["rejected_rows"]):
+            if key in data["rejected_rows"][inv]:
+                del data["rejected_rows"][inv][key]
+                hit = True
+                if not data["rejected_rows"][inv]:
+                    del data["rejected_rows"][inv]
+        if hit:
+            _write(path, data)
+    return hit
+
+
+def forget_invoice(path: str | Path, invoice_id: str) -> bool:
+    """Remove every decision about an invoice id (paid, part-payment, rejections). Sent reminders stay."""
+    hit = False
+    want = invoice_id.strip().lower()
+    with _locked(path):
+        data = _read(path)
+        for section in ("paid", "received", "rejected", "rejected_rows"):
+            for k in [k for k in data[section] if str(k).strip().lower() == want]:
+                del data[section][k]
+                hit = True
+        if hit:
+            _write(path, data)
+    return hit
+
+
+def rename_invoice(path: str | Path, old: str, new: str) -> bool:
+    """You renamed an invoice id in invoices.csv: move the decisions about it (paid, part-payment, rejections, sent reminders)."""
+    hit = False
+    want = old.strip().lower()
+    with _locked(path):
+        data = _read(path)
+        for section in ("paid", "received", "rejected", "rejected_rows", "sent"):
+            for k in [k for k in data[section] if str(k).strip().lower() == want]:
+                data[section][new] = data[section].pop(k)
+                hit = True
+        if hit:
+            _write(path, data)
+    return hit
 
 
 def rebind_keys(path: str | Path, mapping: dict[str, str]) -> None:

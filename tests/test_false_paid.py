@@ -101,7 +101,7 @@ CASES = {
 @pytest.mark.parametrize("name", list(CASES))
 def test_false_paid(name):
     case = CASES[name]
-    payments = dedupe_payments([p for p in case["payments"]], lambda m: None)
+    payments = dedupe_payments([p for p in case["payments"]], lambda m, c="": None)
     results, _ = match_all(case["invoices"], payments, TODAY, Config())
     paid = {r.invoice.id for r in results if r.status == "suggested_paid"}
     assert paid == case["paid"], (name, {r.invoice.id: r.status for r in results})

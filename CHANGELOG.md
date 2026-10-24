@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.6 - 2026-10-25
+
+Simplify: automatic repair was a new way to be wrong, so it is gone.
+
+- **No automatic re-binding.** A confirmation or rejection that points at something missing from today's data (a payment id that changed, an invoice id you renamed) is now a critical `ORPHANED_DECISION` warning when a look-alike exists: what you decided, the invoice snapshot, the candidates with a safety check, and the exact commands. The invoices involved (and any invoice a candidate names) are held in needs review with no reminder, and the candidates are not suggested for anything, until you resolve it with `invoice-chaser rebind <old> <new>` (same checks as the repeat check: a candidate that names another invoice, or has a different bank transaction id, is refused) or `invoice-chaser forget <old>`. This closes the path where a confirmation was attached to a payment naming another invoice and a paid client was chased. A confirmed payment that is merely absent from a shorter export is not an orphan and stays quiet.
+- **Warnings have codes.** Each warning is raised with a code and severity (critical / warning / routine); nothing classifies by reading the text, so payer-controlled text such as "Evil (row skipped)" cannot make a critical warning look routine. A dropped invoice row is critical (`INVOICE_ROW_DROPPED`, named by line and id), a dropped payment row is a warning. The summary counts by code.
+- After `confirm --payment`, the confirmed payments are consumed (the cross-export hold does not fire again) and the other half of the pair is printed with the exact `reject` and `confirm --payment` commands.
+- `confirm --payment` and `reject` refuse an id that exists in two exports and list the source-qualified ids (`wise:X-1`, `bank:X-1`); source-qualified ids are accepted.
+- `ledger reset --backup` refuses a path with no ledger, never overwrites an earlier backup (timestamp plus a counter), and compares the copy with the original byte for byte before resetting.
+- `mark-paid`, `confirm`, `reject` and `mark-sent` refuse a duplicate invoice id (`INV-6001` / `inv-6001`): fix invoices.csv first.
+
 ## 1.1.5 - 2026-10-25
 
 - **A ledger schema, and no pre-release migrations.** No version had been published, so the migration code for unreleased formats is gone. `sent.json` and `seen.json` carry `"schema": 1`; a ledger with no schema, an older or an unknown one is refused with a clear message ("ledger from a pre-release build ...") instead of being guessed at. New command `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions migrate by fingerprint.

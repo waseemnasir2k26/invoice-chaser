@@ -88,6 +88,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 .cmd{user-select:all;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:12px}
 .confirm{border:1px solid #15803d;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px;background:var(--card)}
 .stuck{border:1px solid #b91c1c;border-left-width:6px;border-radius:8px;padding:10px 14px;margin:0 0 16px;background:var(--card)}
+.critical strong{color:#b91c1c}.routine{color:var(--mut)}
 .warn{background:var(--card);border:1px solid #b45309;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px}
 """
 
@@ -192,8 +193,11 @@ def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Dec
     parts.append(_stuck_section(results, out_hint))
     parts.append(_confirm_section(suggestions or [], out_hint))
     if warnings:
+        order = {"critical": 0, "warning": 1, "routine": 2}
+        ranked = sorted(warnings, key=lambda w: order.get(getattr(w, "severity", "warning"), 1))
         parts.append("<div class=warn><strong>Check before using these drafts</strong><ul>"
-                     + "".join(f"<li>{e(w)}</li>" for w in warnings) + "</ul></div>")
+                     + "".join(f"<li class={e(getattr(w, 'severity', 'warning'))}><strong>{e(getattr(w, 'code', 'NOTE'))}</strong> {e(w)}</li>"
+                               for w in ranked) + "</ul></div>")
     tot = totals_by_currency(results)
     parts.append("<h2>Totals by currency</h2><div class=wrap><table><tr><th>Currency</th><th>Invoiced</th><th>Confirmed paid</th>"
                  "<th>Suggested paid</th><th>Overdue outstanding</th><th>Not yet due</th><th>Needs review / waiting</th></tr>")

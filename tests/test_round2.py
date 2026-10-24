@@ -35,13 +35,13 @@ def run(tmp_path, invoices, wise=None, extra=(), config=None):
 
 def test_same_transfer_id_twice_is_dropped_with_warning():
     w = []
-    out = dedupe_payments([pay("T1"), pay("T1"), pay("T2", amount="5")], w.append)
+    out = dedupe_payments([pay("T1"), pay("T1"), pay("T2", amount="5")], lambda m, c="": w.append(m))
     assert [p.id for p in out] == ["T1", "T2"] and "duplicate payment row dropped" in w[0]
 
 
 def test_same_id_different_payment_is_kept_but_suspect():
     w = []
-    out = dedupe_payments([pay("T1", amount="10"), pay("T1", amount="20")], w.append)
+    out = dedupe_payments([pay("T1", amount="10"), pay("T1", amount="20")], lambda m, c="": w.append(m))
     assert len(out) == 2 and all(p.suspect for p in out) and w
 
 
@@ -50,13 +50,13 @@ def test_cross_source_duplicate_flagged_within_one_day():
     a = pay("W1", payer="Acme Studio", source="wise")
     b = pay("B1", d=date(2026, 10, 6), payer="Acme Studio", source="bank")
     c = pay("B2", d=date(2026, 10, 9), payer="Acme Studio", source="bank")      # 4 days apart: a real second payment
-    dedupe_payments([a, b, c], w.append)
+    dedupe_payments([a, b, c], lambda m, c_="": w.append(m))
     assert a.suspect and b.suspect and not c.suspect and "possible duplicate across sources" in w[0]
 
 
 def test_two_real_payments_same_day_same_source_not_flagged():
     a, b = pay("T1", payer="Acme"), pay("T2", payer="Acme")
-    dedupe_payments([a, b], lambda m: None)
+    dedupe_payments([a, b], lambda m, c="": None)
     assert not a.suspect and not b.suspect
 
 
@@ -146,7 +146,8 @@ def test_negative_rows_warned_and_listed(tmp_path, capsys):
     code, rows = run(tmp_path, INV_HEAD + "INV-1,Acme,a@b.co,1000,USD,2026-09-01,2026-10-01\n", wise)
     assert code == 0
     err = capsys.readouterr().err
-    assert "routine" in err and "ignored refund/fee rows" in err and "details in review.html" in err       # counted, not spelled out
+    assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err       # counted, not spelled out
+    assert "negative row(s) ignored" not in err
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     assert "1 negative row(s) ignored" in html and "Negative rows ignored (1)" in html and "Refund to Acme" in html
 
@@ -191,10 +192,10 @@ def test_bad_invoice_row_is_skipped_with_warning_and_strict_aborts(tmp_path, cap
     inv = INV_HEAD + "A,Acme,a@b.co,abc,USD,2026-09-01,2026-10-01\nB,Beta,b@b.co,100,USD,2026-09-01,2026-10-01\n"
     code, rows = run(tmp_path, inv)
     assert code == 0 and list(rows) == ["B"]
-    assert "row 2" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
-    assert "bad rows skipped" in capsys.readouterr().err
+    assert "line 2" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
+    assert "CRITICAL [INVOICE_ROW_DROPPED]" in capsys.readouterr().err
     code, _ = run(tmp_path, inv, extra=["--strict"])
-    assert code == 2 and "row 2" in capsys.readouterr().err
+    assert code == 2 and "line 2" in capsys.readouterr().err
 
 
 def test_bad_payment_row_skipped(tmp_path):
@@ -202,7 +203,7 @@ def test_bad_payment_row_skipped(tmp_path):
     o = ParseOptions()
     f = tmp_path / "w.csv"
     f.write_text(wise, encoding="utf-8")
-    assert [p.id for p in parse_wise(f, o)] == ["W2"] and any("row skipped" in w for w in o.warnings)
+    assert [p.id for p in parse_wise(f, o)] == ["W2"] and any(w.code == "PAYMENT_ROW_DROPPED" for w in o.warnings)
     with pytest.raises(ParseError):
         parse_wise(f, ParseOptions(strict=True))
 

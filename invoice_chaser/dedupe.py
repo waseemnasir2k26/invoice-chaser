@@ -130,7 +130,7 @@ def flag_same_payment_in_two_exports(payments: list[Payment], named_ids, warn) -
                     warn(f"possible same payment seen in two exports: {a.source} {a.id} and {b.source} {b.id} ({a.amount} {a.currency}, "
                          f"{a.date} / {b.date}). Both are held in needs review and neither is suggested as paid. Next step: check your "
                          f"statement. If it is one payment, record it with `invoice-chaser confirm {inv} --payment <id>` naming just one of "
-                         f"them; if both are real, name both.")
+                         f"them; if both are real, name both.", "POSSIBLE_DOUBLE_COUNT")
 
 
 def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
@@ -142,10 +142,10 @@ def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
         if q is not None:
             if (q.amount, q.currency, q.date) == (p.amount, p.currency, p.date):
                 warn(f"duplicate payment row dropped: {p.source} id {p.id} appears twice "
-                     f"({p.date}, {p.amount} {p.currency})")
+                     f"({p.date}, {p.amount} {p.currency})", "DUPLICATE_PAYMENT_ROW")
                 continue
             reason = f"{p.source} id {p.id} is used by two different payments"
-            warn(f"{reason}; both kept but marked for review")
+            warn(f"{reason}; both kept but marked for review", "ID_COLLISION")
             p.suspect = q.suspect = reason
         else:
             seen[key] = p
@@ -164,5 +164,5 @@ def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
                     a.suspect = a.suspect or f"may be the same payment as {b.source} {b.id}"
                     b.suspect = b.suspect or f"may be the same payment as {a.source} {a.id}"
                     warn(f"possible duplicate across sources: {a.source} {a.id} and {b.source} {b.id} "
-                         f"({a.amount} {a.currency}, {a.date}); neither will be counted as paid until you review")
+                         f"({a.amount} {a.currency}, {a.date}); neither will be counted as paid until you review", "POSSIBLE_DOUBLE_COUNT")
     return kept

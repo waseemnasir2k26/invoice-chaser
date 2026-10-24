@@ -27,7 +27,7 @@ SHORT_IDS = ["A7", "B2", "C3", "X1", "PO-5", "AB1"]
 
 
 def _run(invoices, payments, cfg=None, today=TODAY):
-    payments = dedupe_payments(payments, lambda m: None)
+    payments = dedupe_payments(payments, lambda m, c="": None)
     results, _ = match_all(invoices, payments, today, cfg or Config())
     return {r.invoice.id: r.status for r in results}
 

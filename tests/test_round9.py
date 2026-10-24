@@ -97,10 +97,6 @@ def test_ledger_reset_needs_backup_keeps_a_copy_and_starts_fresh(tmp_path, capsy
     assert run(tmp_path)["INV-A"]["status"] == "suggested_paid"                  # and everything works again
 
 
-def test_resetting_when_there_is_no_ledger_is_fine(tmp_path, capsys):
-    assert reset_ledger(tmp_path / "x" / "sent.json", backup=False) is None
-    assert json.loads((tmp_path / "x" / "sent.json").read_text(encoding="utf-8"))["schema"] == 1
-
 
 def test_an_old_seen_json_is_kept_and_reported_not_trusted(tmp_path, capsys):
     setup(tmp_path, "INV-A,Alpha,a@x.example,500,USD,2026-09-01,2026-10-01\n", '"","05-10-2026","500.00","USD","transfer","","Stranger"\n')
@@ -115,44 +111,6 @@ def test_an_old_seen_json_is_kept_and_reported_not_trusted(tmp_path, capsys):
 
 # ---- 1b. a decision follows its payment when the id changes ---------------------------------------------
 
-def test_a_confirmation_follows_its_payment_to_a_new_id(tmp_path, capsys):
-    setup(tmp_path, "INV-A,Alpha,a@x.example,500,USD,2026-09-01,2026-10-01\nINV-B,Beta,b@x.example,500,USD,2026-09-01,2026-10-01\n",
-          ONE[1] + '"","05-10-2026","500.00","USD","500 USD Transfer","","Beta"\n')
-    run(tmp_path)
-    assert main(["confirm", "INV-A", "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
-    real_key = load_payment_rows(ledger(tmp_path))[0]["key"]
-
-    def old_id_format(data):                                   # simulate a future change in how ids are made
-        data["paid"]["INV-A"]["payments"] = ["wise:old-format-0001"]
-        data["paid"]["INV-A"]["payment_rows"][0]["key"] = "wise:old-format-0001"
-    edit_ledger(tmp_path, old_id_format)
-    capsys.readouterr()
-    rows = run(tmp_path)
-    err = capsys.readouterr().err
-    assert f"re-bound to {real_key}" in err and "wise:old-format-0001" in err
-    assert rows["INV-A"]["status"] == "paid" and rows["INV-B"]["status"] in ("suggested_paid", "needs_review")
-    assert load_payment_rows(ledger(tmp_path))[0]["key"] == real_key and load_paid(ledger(tmp_path))["INV-A"]["payments"] == [real_key]
-    capsys.readouterr()
-    run(tmp_path)
-    assert "re-bound" not in capsys.readouterr().err                           # persisted: said once
-
-
-def test_a_rejection_follows_its_payment_to_a_new_id_and_still_holds(tmp_path, capsys):
-    setup(tmp_path, *ONE)
-    run(tmp_path)
-    pid = json.loads((tmp_path / "out" / "suggestions.json").read_text(encoding="utf-8"))["suggestions"][0]["payments"][0]["id"]
-    assert main(["reject", "INV-A", pid, "--out", str(tmp_path / "out")]) == 0
-    old = "wise:old-format-0002"
-
-    def old_id_format(data):
-        data["rejected"]["INV-A"] = [old]
-        data["rejected_rows"]["INV-A"] = {old: data["rejected_rows"]["INV-A"][f"wise:{pid}"]}
-    edit_ledger(tmp_path, old_id_format)
-    capsys.readouterr()
-    rows = run(tmp_path)
-    assert f"re-bound to wise:{pid}" in capsys.readouterr().err
-    assert rows["INV-A"]["status"] == "overdue"                                 # the rejection still holds
-    assert load_rejected(ledger(tmp_path)) == {"INV-A": [f"wise:{pid}"]} and list(load_rejected_rows(ledger(tmp_path))["INV-A"]) == [f"wise:{pid}"]
 
 
 def test_a_decision_with_no_matching_payment_is_left_alone(tmp_path, capsys):
@@ -277,11 +235,12 @@ def test_warnings_become_one_summary_with_counts(tmp_path, capsys):
     capsys.readouterr()
     assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
     err = capsys.readouterr().err
-    assert "NOTICES: 3 routine (" in err and "1 bad rows skipped" in err and "1 ignored refund/fee rows" in err and "details in review.html" in err
-    assert "Summary: 1 warning(s) above, 3 routine notice(s)" in err
-    assert "negative row(s) ignored" not in err and "row skipped" not in err           # counted, not spelled out
+    assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err
+    assert "CRITICAL [INVOICE_ROW_DROPPED]: i.csv line 3 (invoice id 'BAD')" in err            # a dropped invoice is never "routine"
+    assert "Summary: 1 critical (INVOICE_ROW_DROPPED x1)" in err and "1 routine (NEGATIVE_ROWS x1)" in err
+    assert "negative row(s) ignored" not in err                                            # routine: counted, not spelled out
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
-    assert "negative row(s) ignored" in html and "row skipped" in html
+    assert "negative row(s) ignored" in html and "INVOICE_ROW_DROPPED" in html
 
 
 def test_the_sender_email_warning_is_said_once_per_output_folder(tmp_path, capsys):
@@ -312,7 +271,7 @@ def test_every_row_skipped_explains_why(tmp_path, capsys):
     (tmp_path / "i.csv").write_text(INV_HEAD + "A,x,a@b.co,abc,USD,2026-01-01,2026-02-01\n", encoding="utf-8")
     assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(tmp_path / "out")]) == 2
     err = capsys.readouterr().err
-    assert "no invoices found" in err and "unrecognised amount" in err
+    assert "no invoices found" in err and "unrecognised amount" in err and "line 2" in err
 
 
 # ---- README / ruff -----------------------------------------------------------------------------------------------

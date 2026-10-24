@@ -13,6 +13,8 @@ import re
 from email.message import EmailMessage
 from pathlib import Path
 
+from .notices import Notice
+
 
 def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("._") or "invoice"
@@ -98,8 +100,8 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
                 n += 1
             f.replace(target)
             del kept[name]
-            warnings.append(f"{name}: invoice {inv_id} is now paid, so your edited draft was moved to drafts/stale/ "
-                            f"(not deleted)")
+            warnings.append(Notice(f"{name}: invoice {inv_id} is now paid, so your edited draft was moved to drafts/stale/ "
+                                   f"(not deleted)", "DRAFT_STALE"))
         else:
             edited.add(name.lower())
     reported: set[str] = set()
@@ -112,7 +114,7 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
         if f"{stem}.eml".lower() in edited:
             name = f"{stem}.new"
             reported.add(f"{stem}.eml".lower())
-            warnings.append(f"{stem}.eml was edited by you and was kept; the new draft is {name}.eml")
+            warnings.append(Notice(f"{stem}.eml was edited by you and was kept; the new draft is {name}.eml", "DRAFT_KEPT"))
         # ids like A/1 and A_1 must not overwrite each other, nor any file we did not write
         base = name
         while name.lower() in used or (d / f"{name}.eml").exists():
@@ -126,7 +128,7 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
         paths.append(p)
     for name in sorted(kept):
         if name.lower() not in reported:
-            warnings.append(f"{name} was edited by you and is kept (it is never deleted or overwritten)")
+            warnings.append(Notice(f"{name} was edited by you and is kept (it is never deleted or overwritten)", "DRAFT_KEPT"))
     (Path(out_dir) / "drafts.json").write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
     (Path(out_dir) / "kept.json").write_text(json.dumps(kept, indent=2, ensure_ascii=False), encoding="utf-8")
     return paths

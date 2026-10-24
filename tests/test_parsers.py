@@ -86,9 +86,9 @@ def test_invoices_sample_and_errors(examples, tmp_path):
     with pytest.raises(ParseError, match="duplicate"):
         read_invoices(dup, ParseOptions(strict=True))
     opts = ParseOptions()  # default: skip the bad row, keep going, say so
-    assert len(read_invoices(dup, opts)) == 1 and "duplicate" in opts.warnings[0] and "row skipped" in opts.warnings[0]
+    assert len(read_invoices(dup, opts)) == 1 and "duplicate" in opts.warnings[0] and "DROPPED" in opts.warnings[0] and opts.warnings[0].code == "INVOICE_ROW_DROPPED"
     bad = tmp_path / "b.csv"
     bad.write_text("id,client,email,amount,currency,issued,due\nA,x,,abc,USD,2026-01-01,2026-02-01\n")
-    with pytest.raises(ParseError, match="row 2"):
+    with pytest.raises(ParseError, match="line 2"):
         read_invoices(bad, ParseOptions(strict=True))
     assert read_invoices(bad) == []

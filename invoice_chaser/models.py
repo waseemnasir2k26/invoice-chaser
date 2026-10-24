@@ -46,6 +46,7 @@ class Match:
     currency: str = ""
     amount: Decimal = Decimal(0)  # the payment row as exported (before conversion)
     named: tuple = ()  # invoice ids the payment text names
+    suspect: str = ""  # why this payment is held (possible duplicate, id collision...)
 
 
 @dataclass
