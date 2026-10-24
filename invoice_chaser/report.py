@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import csv
-import re
 from decimal import Decimal
 from html import escape
 from pathlib import Path
 
-from .models import InvoiceResult, Payment
 from .decision import visible
+from .models import InvoiceResult, Payment
 from .shellquote import quote
 
 STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),

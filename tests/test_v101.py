@@ -253,7 +253,10 @@ def test_ledger_roundtrip_and_corruption(tmp_path):
     record_sent(p, "A", "nudge", date(2026, 1, 1))   # idempotent
     record_sent(p, "A", "firm", date(2026, 1, 8))
     assert len(load_ledger(p)["A"]) == 2
-    p.write_text('{"A": [{"stage": "nope", "date": "2026-01-01"}]}')
+    p.write_text('{"schema": 1, "sent": {"A": [{"stage": "nope", "date": "2026-01-01"}]}}')
+    with pytest.raises(ValueError, match="not a valid sent ledger"):
+        load_ledger(p)
+    p.write_text("{ not json")
     with pytest.raises(ValueError, match="not a valid sent ledger"):
         load_ledger(p)
 

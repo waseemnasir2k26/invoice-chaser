@@ -145,9 +145,10 @@ def test_negative_rows_warned_and_listed(tmp_path, capsys):
     wise = WISE_HEAD + '"R1","05-10-2026","-250.00","USD","Refund to Acme","",""\n'
     code, rows = run(tmp_path, INV_HEAD + "INV-1,Acme,a@b.co,1000,USD,2026-09-01,2026-10-01\n", wise)
     assert code == 0
-    assert "1 negative row(s) ignored" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "routine" in err and "ignored refund/fee rows" in err and "details in review.html" in err       # counted, not spelled out
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
-    assert "Negative rows ignored (1)" in html and "Refund to Acme" in html
+    assert "1 negative row(s) ignored" in html and "Negative rows ignored (1)" in html and "Refund to Acme" in html
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-16-le"])
@@ -191,7 +192,7 @@ def test_bad_invoice_row_is_skipped_with_warning_and_strict_aborts(tmp_path, cap
     code, rows = run(tmp_path, inv)
     assert code == 0 and list(rows) == ["B"]
     assert "row 2" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
-    assert "row skipped" in capsys.readouterr().err
+    assert "bad rows skipped" in capsys.readouterr().err
     code, _ = run(tmp_path, inv, extra=["--strict"])
     assert code == 2 and "row 2" in capsys.readouterr().err
 
@@ -278,7 +279,7 @@ def test_mark_sent_ids_are_case_insensitive_and_unknown_refused(tmp_path, capsys
 def test_ledger_ids_match_case_insensitively_on_run(tmp_path):
     out = tmp_path / "out"
     main(["demo", "--keep-ledger", "--out", str(out)])
-    (out / "sent.json").write_text(json.dumps({"sent": {"inv-1004": [{"stage": "nudge", "date": "2026-10-25"}]}, "paid": {}}))
+    (out / "sent.json").write_text(json.dumps({"schema": 1, "sent": {"inv-1004": [{"stage": "nudge", "date": "2026-10-25"}]}, "paid": {}}))
     main(["demo", "--keep-ledger", "--out", str(out)])
     assert not (out / "drafts" / "INV-1004-nudge.eml").exists()
 

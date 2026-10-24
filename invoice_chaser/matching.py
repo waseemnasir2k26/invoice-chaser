@@ -19,20 +19,25 @@ never paired with all of them.
 """
 from __future__ import annotations
 
+import re
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from difflib import SequenceMatcher
-from functools import lru_cache
+from functools import cache, lru_cache
 
 from .config import Config
-from .decision import IdIndex, company_key, field_texts, has_negative_context, same_company
+from .decision import (
+    IdIndex,
+    company_key,
+    field_texts,
+    has_negative_context,
+    same_company,
+)
 from .ladder import days_overdue, stage_for
 from .models import Invoice, InvoiceResult, Match, Payment
-
-import re
 
 SETTLED = {"paid", "settled"}
 VOID = {"void", "voided", "cancelled", "canceled", "written off", "writtenoff"}
@@ -51,7 +56,7 @@ def ref_hit(invoice_id: str, text: str, prefixes=()) -> bool:
     return invoice_id in IdIndex([invoice_id], prefixes).find(text)
 
 
-@lru_cache(maxsize=None)
+@cache
 def norm_name(s: str) -> str:
     s = (s or "").lower().replace("&", " and ")
     s = re.sub(r"[^a-z0-9 ]", " ", s)
@@ -77,7 +82,7 @@ def _text_sim(c: str, t: str) -> float:
         best = sm.ratio()
     if len(tw) > len(cw) + 1:  # long text (a description): also compare word windows of the client's length
         for size in {len(cw), max(1, len(cw) - 1), len(cw) + 1}:
-            for i in range(0, max(1, len(tw) - size + 1)):
+            for i in range(max(1, len(tw) - size + 1)):
                 sm.set_seq1(" ".join(tw[i:i + size]))
                 if sm.quick_ratio() > max(best, 0.59):
                     best = max(best, sm.ratio())

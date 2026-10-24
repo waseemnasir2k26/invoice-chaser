@@ -15,7 +15,13 @@ from pathlib import Path
 from . import __version__
 from .config import load_config, validate
 from .decision import IdIndex, field_texts, visible
-from .dedupe import dedupe_payments, payment_row, repeat_of, row_matches
+from .dedupe import (
+    dedupe_payments,
+    flag_same_payment_in_two_exports,
+    payment_row,
+    repeat_of,
+    row_matches,
+)
 from .drafts import valid_email, write_drafts
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
@@ -24,19 +30,17 @@ from .ledger import (
     ci,
     highest_sent,
     last_sent_date,
-    load_dropped,
     load_ledger,
     load_paid,
     load_payment_rows,
     load_received,
-    load_reconfirm,
     load_rejected,
     load_rejected_rows,
-    migrate_row_keys,
+    rebind_keys,
     record_paid,
-    record_received,
     record_rejected,
     record_sent,
+    reset_ledger,
     snapshot_diff,
     snapshot_of,
     unrecord_paid,
@@ -57,6 +61,7 @@ from .templating import TemplateError, flags_for, load_template, render, variabl
 
 DEMO_DIR = Path(__file__).resolve().parent / "demo_data"
 DEMO_TODAY = date(2026, 10, 25)
+SEEN_SCHEMA = 1
 CHECK_SNAPSHOT = True  # tests switch this off to prove the snapshot check is what catches a changed invoice
 
 
@@ -106,6 +111,10 @@ def run(args) -> int:
                         strict=getattr(args, "strict", False),
                         decimal_comma=True if getattr(args, "decimal_comma", False) else cfg.decimal_comma)
     invoices = read_invoices(args.invoices, opts)
+    if not invoices:
+        skipped = [w for w in opts.warnings if "row skipped" in w]
+        raise ParseError(f"no invoices found in {Path(args.invoices).name}: it has no usable rows (an empty file, only the header line, or every "
+                         f"row was skipped{': ' + '; '.join(skipped[:3]) if skipped else ''}). Nothing was written.")
     payments = []
     for p in args.wise or []:
         payments += parse_wise(p, opts)
@@ -122,17 +131,13 @@ def run(args) -> int:
 
     out = Path(args.out)
     lpath = _ledger_path(args)
-    migrate_row_keys(lpath)  # drops ledger keys that were row numbers (not stable across exports)
-    dropped = load_dropped(lpath)
+    warnings: list[str] = list(opts.warnings)
+    notes: list[str] = []
+    _rebind_orphans(lpath, payments, warnings)  # a decision whose payment now has another id follows it, by fingerprint
     ledger = ci(load_ledger(lpath))
     paid_marks = ci(load_paid(lpath))
     received_marks = ci(load_received(lpath))
     rejected = ci(load_rejected(lpath))
-    warnings: list[str] = list(opts.warnings)
-    notes: list[str] = []
-    for inv_id, keys in dropped.items():
-        warnings.append(f"{inv_id}: ledger reference(s) {', '.join(keys)} were dropped because row-numbered payment ids are not stable "
-                        f"across exports; check this invoice (a rejected payment may be suggested again)")
 
     # ---- what you already decided: confirmed payments are consumed, rejected ones never come back ----
     consumed = {k: inv for inv, m in list(paid_marks.items()) + list(received_marks.items()) for k in m.get("payments", [])}
@@ -164,15 +169,14 @@ def run(args) -> int:
     for p in payments:
         if p.id in cross and not p.suspect:
             p.suspect = "identical payment found in two exports: one real payment or two?"
-        named = set()
-        for text in field_texts(p.description, p.payer):
-            named |= id_index.find(text)
+        named = _named_ids(p, id_index)
         hit = repeat_of(p, confirmed_rows, named)
         if hit:  # a cosmetic re-export changed the id, but it is the same date, amount, currency and payer
             p.suspect = f"possible repeat of a payment you already confirmed for {hit['invoice']}: not counted again"
             warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}) looks like a repeat of a payment you "
                             f"confirmed for {hit['invoice']}; it is held in needs review and not counted again. Next step: if it is the same payment, "
                             f"leave it. If you checked and it is a separate one, run `invoice-chaser mark-paid {quote(hit['invoice'])}` or the invoice it belongs to.")
+    flag_same_payment_in_two_exports(payments, lambda p: _named_ids(p, id_index), warnings.append)
     if cross:
         warnings.append(f"{len(cross)} payment row(s) are identical in two of your exports (one real payment or two?): both are "
                         f"kept and held in needs review, never silently merged or dropped. Next step: check your statement. If it is one payment, "
@@ -197,7 +201,7 @@ def run(args) -> int:
                     warnings.append(f"{p.source} payment {p.id} ({p.amount} {p.currency}, {p.date}) shares its id with a payment you rejected for "
                                     f"{iid}, but it is a different payment; it is held in needs review. Next step: check it on your statement, "
                                     f"then `invoice-chaser mark-paid <invoice>` if it is paid.")
-    by_id = {i.id.strip().lower(): i for i in invoices}
+    by_exact = {i.id: i for i in invoices}
     engine_invoices = []
     for i in invoices:
         rec = received_marks.get(i.id.strip().lower())
@@ -206,7 +210,7 @@ def run(args) -> int:
         engine_invoices.append(i)
     results, leftovers, early = match_all_ex(engine_invoices, payments, today, cfg, excluded)
     for r in results:
-        r.invoice = by_id[r.invoice.id.strip().lower()]
+        r.invoice = by_exact[r.invoice.id]
 
     # ---- the ledger decides paid / partial; a changed invoice goes back to review ----
     for r in results:
@@ -244,24 +248,14 @@ def run(args) -> int:
             r.why_not_paid = f"{got:.2f} of {r.invoice.amount:.2f} confirmed; {r.outstanding:.2f} still outstanding"
             r.confidence = 1.0
 
-    # a part-payment rolled back by the 1.1.1 migration: never chase the full amount from a client who may have paid part
-    reconfirm = ci(load_reconfirm(lpath))
-    warned_reconfirm = set()
+    # INV-6001 and inv-6001 in the same file: never merged, never guessed. Both wait in needs review and neither gets a reminder.
     for r in results:
-        rc = reconfirm.get(r.invoice.id.strip().lower())
-        if rc and r.status in ("overdue", "open"):
+        if " ".join(r.invoice.id.casefold().split()) in opts.case_dup_ids:
             r.status, r.stage, r.paid, r.outstanding = "needs_review", None, Decimal("0.00"), r.invoice.amount
-            r.why_not_paid = (f"re-confirm after upgrade: you had confirmed a part-payment of {rc['amount']} on {rc['date']}, but it was tied to "
-                              f"row-numbered payment ids and was rolled back. Confirm the payment again if it shows up, or run "
-                              f"`invoice-chaser mark-paid {quote(r.invoice.id)}` / `invoice-chaser unmark-paid {quote(r.invoice.id)}`")
-            r.note = "no reminder is drafted until you re-confirm"
-            warnings.append(f"{r.invoice.id}: {r.why_not_paid}")
-            warned_reconfirm.add(r.invoice.id.strip().lower())
-    for r in results:
-        rc = reconfirm.get(r.invoice.id.strip().lower())
-        if rc and r.invoice.id.strip().lower() not in warned_reconfirm:
-            warnings.append(f"{r.invoice.id}: your confirmed part-payment of {rc['amount']} was rolled back after the upgrade (it was tied to "
-                            f"row-numbered payment ids): re-confirm the payment, or `invoice-chaser mark-paid {quote(r.invoice.id)}` if you checked")
+            r.matches, r.suggestions = [], []
+            r.why_not_paid = ("duplicate invoice id (case differs): another invoice in the file has the same id with different capitals. "
+                              "Give each invoice its own id in invoices.csv, then run again")
+            r.note = "no reminder is drafted for either invoice until the ids are unique"
 
     # ---- the tool's own output: suggestions, never paid ----
     for r in results:  # say why a rejected payment is no longer suggested
@@ -365,8 +359,7 @@ def run(args) -> int:
         print(f"  {len(early)} payment(s) dated outside an invoice's window: listed in review.html (check the date format)")
     for n in notes:
         print("  " + n)
-    for w in warnings:
-        print(f"  WARNING: {w}", file=sys.stderr)
+    _print_warnings(warnings, out)
     return 0
 
 
@@ -402,6 +395,88 @@ def _suggestions(results, received_marks, cfg, today) -> list[dict]:
     return out
 
 
+def _named_ids(p, index: IdIndex) -> set:
+    named: set = set()
+    for text in field_texts(p.description, p.payer):
+        named |= index.find(text)
+    return named
+
+
+def _rebind_orphans(lpath: Path, payments: list, warnings: list[str]) -> None:
+    """A confirmation or rejection whose payment id is not in today's exports, but whose FINGERPRINT (date, amount,
+    currency, payer company) matches a payment that is, is moved to that payment, with a warning. A decision then
+    survives a change in how payment ids are made instead of silently falling off."""
+    present = {_pkey(p) for p in payments}
+    mapping: dict[str, str] = {}
+    claimed = set(present)  # keys already known to the ledger are not up for grabs
+    ledger_keys = {r["key"] for r in load_payment_rows(lpath)}
+    for inv, rows in load_rejected_rows(lpath).items():
+        ledger_keys.update(rows)
+    claimed = {k for k in present if k in ledger_keys}
+
+    def find(row):
+        for p in payments:
+            k = _pkey(p)
+            if k not in claimed and k not in mapping.values() and row_matches(p, row, 0):
+                return k
+        return None
+
+    for row in load_payment_rows(lpath):
+        if row["key"] not in present and row["key"] not in mapping:
+            new = find(row)
+            if new:
+                mapping[row["key"]] = new
+                warnings.append(f"{row['invoice']}: your confirmation of {row['key']} was re-bound to {new}: same date, amount, currency and "
+                                f"payer, but the payment now has another id.")
+    for inv, rows in load_rejected_rows(lpath).items():
+        for key, row in rows.items():
+            if key not in present and key not in mapping:
+                new = find(row)
+                if new:
+                    mapping[key] = new
+                    warnings.append(f"{inv}: your rejection of {key} was re-bound to {new}: same date, amount, currency and payer, but the "
+                                    f"payment now has another id.")
+    rebind_keys(lpath, mapping)
+
+
+_MINOR = (("negative row(s) ignored", "ignored refund/fee rows"), ("skipped because their status", "pending rows skipped"),
+          ("(row skipped)", "bad rows skipped"), ("every dated row could be", "ambiguous dates"), ("is not an ISO code", "unknown currencies"),
+          ("is ambiguous (USD", "ambiguous $ currency"))
+
+
+def _print_warnings(warnings: list[str], out: Path) -> None:
+    """One summary: the warnings that need a decision stay in full, the routine ones are counted, and everything is in review.html."""
+    if not warnings:
+        return
+    notices = out / "notices.json"
+    seen_notices: dict = {}
+    try:
+        seen_notices = json.loads(notices.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    important, minor_labels = [], {}
+    for w in warnings:
+        label = next((lab for marker, lab in _MINOR if marker in w), None)
+        if label:
+            minor_labels[label] = minor_labels.get(label, 0) + 1
+        elif w.startswith("sender_email is not set"):
+            if not seen_notices.get("sender_email"):  # said once per output folder, then remembered
+                important.append(w)
+                seen_notices["sender_email"] = True
+        else:
+            important.append(w)
+    for w in important:
+        print(f"  WARNING: {w}", file=sys.stderr)
+    n_minor = sum(minor_labels.values())
+    if n_minor:
+        print(f"  NOTICES: {n_minor} routine ({', '.join(f'{c} {lab}' for lab, c in minor_labels.items())}); details in review.html", file=sys.stderr)
+    print(f"  Summary: {len(important)} warning(s) above, {n_minor} routine notice(s); everything is listed in review.html", file=sys.stderr)
+    try:
+        atomic_write_text(notices, json.dumps(seen_notices))
+    except OSError:
+        pass
+
+
 def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) -> None:
     """Remember when each invoice first started waiting for your decision (out/seen.json, keyed by INVOICE, not by
     payment, so a changed payment id or a flip between "suggested" and "needs review" does not restart the clock).
@@ -414,8 +489,9 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
     if seen_file.exists():
         try:
             history = json.loads(seen_file.read_text(encoding="utf-8-sig"))
-            if not isinstance(history, dict):
-                raise ValueError("not an object")
+            if not isinstance(history, dict) or history.get("schema") != SEEN_SCHEMA or not isinstance(history.get("invoices"), dict):
+                raise ValueError("no schema, or a different one")
+            history = history["invoices"]
         except (OSError, ValueError):
             backup = seen_file.with_name(f"seen.json.corrupt-{real_today.isoformat()}")
             try:
@@ -423,7 +499,7 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
             except OSError:
                 pass
             history = {}
-            warnings.append(f"seen.json could not be read, so I do not know how long invoices have been waiting. The damaged file was kept as "
+            warnings.append(f"seen.json could not be read (damaged, or from a pre-release build), so I do not know how long invoices have been waiting. The old file was kept as "
                             f"{backup.name}. Waiting times restart today: check the oldest suggestions and reviews yourself.")
     now: dict[str, dict] = {}
     for r in results:
@@ -441,7 +517,7 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
         r.waiting_days = max((today - first).days, 0)
         r.stuck = r.waiting_days > cfg.stuck_after_days or r.days_overdue > cfg.stuck_overdue_days
     out.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(seen_file, json.dumps(now, indent=2, sort_keys=True))
+    atomic_write_text(seen_file, json.dumps({"schema": SEEN_SCHEMA, "invoices": now}, indent=2, sort_keys=True))
 
 
 def _check_item(r, cfg, out_hint: str) -> dict:
@@ -598,6 +674,38 @@ def _confirm_all(entries: list[dict], when: date, lpath: Path) -> list[str]:
     return [summary for _, summary in built]
 
 
+def _entry_with_payments(entries: list[dict], invoice: str, wanted: list[str]) -> dict:
+    """`confirm INV --payment ID`: you name the payment(s). Works on any suggestion, also a held one (a possible same payment in two
+    exports): only the payments you name are counted, and never more than what the invoice still needs."""
+    want = invoice.strip().lower()
+    entry = next((e for e in entries if e["invoice_id"].strip().lower() == want), None)
+    if entry is None:
+        raise ValueError(f"no suggestion for {invoice} in the last run (use `invoice-chaser mark-paid` if you checked yourself)")
+    by_name = {}
+    for p in entry["payments"]:
+        by_name[p["id"].lower()] = p
+        by_name[p["key"].lower()] = p
+    chosen = []
+    for w in wanted:
+        p = by_name.get(w.strip().lower())
+        if p is None:
+            raise ValueError(f"{w!r} is not a payment suggested for {entry['invoice_id']} in the last run "
+                             f"(known: {', '.join(sorted(p['id'] for p in entry['payments']))})")
+        if p["currency"] != entry["currency"]:
+            raise ValueError(f"payment {p['id']} is in {p['currency']}, the invoice in {entry['currency']}: use `invoice-chaser mark-paid` once you have checked")
+        if p not in chosen:
+            chosen.append(p)
+    amount, prev = Decimal(entry["amount"]), Decimal(entry["previous_received"])
+    remaining, picked = amount - prev, []
+    for p in chosen:
+        alloc = min(Decimal(p["amount"]), remaining)
+        remaining -= alloc
+        picked.append({**p, "allocated": str(alloc)})
+    total = prev + sum((Decimal(p["allocated"]) for p in picked), Decimal(0))
+    kind = "paid" if total >= amount - Decimal(entry["tolerance"]) else "partial"
+    return {**entry, "kind": kind, "payments": picked}
+
+
 def confirm(args) -> int:
     out = Path(args.out)
     lpath = _ledger_path(args)
@@ -606,6 +714,8 @@ def confirm(args) -> int:
     when = date.fromisoformat(args.date) if args.date else real_today
     if when > real_today:
         raise ValueError(f"--date {when} is in the future")
+    if args.all_strong and getattr(args, "payment", None):
+        raise ValueError("--payment names payments for ONE invoice: it cannot be combined with --all-strong")
     if args.all_strong:
         todo = [e for e in entries if e["kind"] == "paid"]
         if not todo:
@@ -639,12 +749,19 @@ def confirm(args) -> int:
         return 0
     if not args.invoice:
         raise ValueError("give an invoice id, or use --all-strong")
+    if getattr(args, "payment", None):
+        entry = _entry_with_payments(entries, args.invoice, args.payment)
+        _check_still_valid([entry], meta, lpath, real_today)
+        print(_confirm_all([entry], when, lpath)[0])
+        print(f"recorded -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
+        return 0
     want = args.invoice.strip().lower()
     entry = next((e for e in entries if e["invoice_id"].strip().lower() == want and e["kind"] in ("paid", "partial")), None)
     if entry is None:
         weak = any(e["invoice_id"].strip().lower() == want for e in entries)
         raise ValueError(f"no strong suggestion for {args.invoice} in the last run"
-                         + (" (it only has weak candidates: if you checked and it is paid, use `invoice-chaser mark-paid`)" if weak
+                         + (" (it only has weak candidates: name the payment you checked with `invoice-chaser confirm "
+                            f"{quote(args.invoice)} --payment <id>`, or use `invoice-chaser mark-paid`)" if weak
                             else " (use `invoice-chaser mark-paid` if you checked yourself)"))
     _check_still_valid([entry], meta, lpath, real_today)
     print(_confirm_all([entry], when, lpath)[0])
@@ -728,6 +845,13 @@ def unmark_paid(args) -> int:
     return 0
 
 
+def ledger_reset(args) -> int:
+    path = _ledger_path(args)
+    kept = reset_ledger(path, args.backup)
+    print(f"ledger reset -> {path.name}" + (f" (the old one is kept as {kept.name})" if kept else " (there was none)"))
+    return 0
+
+
 def demo(args) -> int:
     d = DEMO_DIR
     keep = getattr(args, "keep_ledger", False)
@@ -781,6 +905,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("invoice", nargs="?")
     c.add_argument("--all-strong", action="store_true", help="confirm every strong suggested-paid invoice (prints the list, asks y/N)")
     c.add_argument("--yes", action="store_true", help="do not ask (use after reviewing the list)")
+    c.add_argument("--payment", action="append", help="count only this payment (repeatable); also works on a held suggestion")
     c.add_argument("--date", help="payment received on YYYY-MM-DD (default: today; not in the future)")
     c.add_argument("--today", help=argparse.SUPPRESS)
     common(c, invoice=False)
@@ -806,6 +931,13 @@ def build_parser() -> argparse.ArgumentParser:
     um = sub.add_parser("unmark-paid", help="undo a confirm / mark-paid")
     common(um)
     um.set_defaults(fn=unmark_paid)
+
+    lg = sub.add_parser("ledger", help="manage out/sent.json")
+    lgs = lg.add_subparsers(dest="ledger_cmd", required=True)
+    rs = lgs.add_parser("reset", help="start a fresh ledger (use after a pre-release build); --backup keeps a copy")
+    rs.add_argument("--backup", action="store_true", help="keep a copy of the old ledger as <name>.pre-release-<time>")
+    common(rs, invoice=False)
+    rs.set_defaults(fn=ledger_reset)
 
     d = sub.add_parser("demo", help="run on the bundled synthetic samples")
     d.add_argument("--out", default="out")

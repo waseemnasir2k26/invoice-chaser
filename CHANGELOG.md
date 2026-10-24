@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.5 - 2026-10-25
+
+- **A ledger schema, and no pre-release migrations.** No version had been published, so the migration code for unreleased formats is gone. `sent.json` and `seen.json` carry `"schema": 1`; a ledger with no schema, an older or an unknown one is refused with a clear message ("ledger from a pre-release build ...") instead of being guessed at. New command `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions migrate by fingerprint.
+- **Decisions follow their payment.** A confirmation or rejection whose payment id is no longer in your exports, but whose fingerprint (date, amount, currency, payer company) matches a payment that is, is re-bound to it with a warning, and the ledger is updated. A change in how ids are made can no longer silently drop a decision.
+- **The same payment in two exports under different payer names** ("Acme Ltd" in Wise, "Jane Okafor" in the bank file): same amount and currency, within two days, same invoice id named in both (or both payers blank): both are held in needs review. `confirm INV --payment ID` names the payment(s) you checked; the invoice is never counted twice.
+- **`INV-6001` and `inv-6001`** are no longer merged: both are held in needs review ("duplicate invoice id (case differs)"), no reminder to either client until the ids are unique.
+- One warning summary instead of a wall of text: decisions needed are printed in full, routine notices are counted, everything is in `review.html`; the missing `sender_email` warning is said once per output folder. An empty invoice file says "no invoices found" and why.
+- ruff safe fixes applied to the package.
+
 ## 1.1.4 - 2026-10-25
 
 - **A confirmed payment is only consumed when it really is that payment.** Matching the id was not enough: a bank can reuse a transaction id, and two rows can end up with the same id. A payment is now dropped as "already confirmed" only when its id AND its date, amount, currency and payer (as a company) agree with what the ledger remembered. Any mismatch keeps the payment, holds it in needs review as "id collision with a payment you confirmed for INV-x", and prints a loud warning with the next step. A paid client can no longer be chased because another client's payment was swallowed. The same check applies to rejections (stored with a fingerprint now; an older rejection without one is reported and the payment is suggested again until you reject it once more) and to `confirm`.

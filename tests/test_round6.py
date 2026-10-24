@@ -11,7 +11,7 @@ from conftest import ABSOLUTE_PATH, assert_no_absolute_paths
 from invoice_chaser import cli
 from invoice_chaser.cli import main
 from invoice_chaser.dedupe import payment_row, repeat_of
-from invoice_chaser.ledger import load_paid, load_payment_rows, load_reconfirm, load_received
+from invoice_chaser.ledger import load_paid, load_payment_rows, load_received
 from invoice_chaser.models import Payment
 from invoice_chaser.parsers import ParseOptions, parse_wise
 from invoice_chaser.shellquote import quote
@@ -56,20 +56,35 @@ def test_punctuation_case_and_spacing_do_not_change_a_payment_id(tmp_path):
     assert parse_wise(f)[0].id == a
 
 
-def test_a_reworded_re_export_is_a_repeat_not_a_new_payment(tmp_path):
+def test_a_reworded_re_export_is_followed_not_counted_twice(tmp_path, capsys):
     setup(tmp_path, HALF, ROW)
     assert run(tmp_path)["INV-1"]["status"] == "partial_suggested"
     confirm(tmp_path, "INV-1")
     rows = run(tmp_path)
     assert rows["INV-1"]["status"] == "partial" and rows["INV-1"]["outstanding"] == "500.00"
-    # the bank re-exports with different wording: a new id, but the same date, amount, currency and payer
+    # the bank re-exports with different wording: a new id for the SAME payment (same date, amount, currency and payer).
+    # The old id is gone, so the confirmation is re-bound to the new id, with a warning, and the 500 is not counted again.
     (tmp_path / "w.csv").write_text(WISE_HEAD + '"","05-10-2026","500.00","USD","Deposit received for invoice INV-1","INV-1","Acme Studio"\n',
+                                    encoding="utf-8")
+    capsys.readouterr()
+    rows = run(tmp_path)
+    assert "was re-bound to" in capsys.readouterr().err
+    assert rows["INV-1"]["status"] == "partial" and rows["INV-1"]["outstanding"] == "500.00"
+    assert load_received(tmp_path / "out" / "sent.json")["INV-1"]["amount"] == "500.00"
+    assert run(tmp_path)["INV-1"]["status"] == "partial"                      # and the re-binding stuck: nothing to say any more
+
+
+def test_a_reworded_copy_next_to_the_original_is_held_as_a_repeat(tmp_path):
+    setup(tmp_path, HALF, ROW)
+    run(tmp_path)
+    confirm(tmp_path, "INV-1")
+    # both the original row and a reworded copy of it are in the new export
+    (tmp_path / "w.csv").write_text(WISE_HEAD + ROW + '"","05-10-2026","500.00","USD","Deposit received for invoice INV-1","INV-1","Acme Studio"\n',
                                     encoding="utf-8")
     rows = run(tmp_path)
     assert rows["INV-1"]["status"] == "needs_review", "the same 500 must not be suggested (and counted) a second time"
     assert "possible repeat of a payment you already confirmed for INV-1" in rows["INV-1"]["why_not_paid"]
-    assert rows["INV-1"]["paid"] == "0.00" or Decimal(rows["INV-1"]["paid"]) <= Decimal("500.00")
-    assert rows["INV-1"]["draft_file"] == ""
+    assert Decimal(rows["INV-1"]["paid"]) <= Decimal("500.00") and rows["INV-1"]["draft_file"] == ""
     assert load_received(tmp_path / "out" / "sent.json")["INV-1"]["amount"] == "500.00"
 
 
@@ -139,7 +154,7 @@ def test_a_future_today_cannot_poison_first_seen(tmp_path):
     setup(tmp_path, *STRANGER)
     run(tmp_path, today="2030-01-01")
     seen = json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8"))
-    assert date.fromisoformat(seen["inv-1"]["first_seen"]) <= date.today()
+    assert date.fromisoformat(seen["invoices"]["inv-1"]["first_seen"]) <= date.today()
     rows = run(tmp_path, today="2026-10-25")
     assert rows["INV-1"]["waiting_days"] == "0"                              # not negative, not stuck by a poisoned date
 
@@ -170,32 +185,6 @@ def test_the_stuck_note_says_first_seen_today_and_days_overdue(tmp_path):
 
 # ---- legacy migration must not double count -----------------------------------------------------------
 
-def test_migration_rolls_back_a_part_payment_tied_to_row_numbers(tmp_path, capsys):
-    setup(tmp_path, "INV-1,Acme Studio,a@acme.example,2500,USD,2026-09-01,2026-10-01\n",
-          '"","05-10-2026","1000.00","USD","Deposit INV-1","INV-1","Acme Studio"\n"","12-10-2026","1500.00","USD","Balance","INV-1","Acme Studio"\n')
-    run(tmp_path)
-    ledger = tmp_path / "out" / "sent.json"
-    ledger.write_text(json.dumps({"sent": {}, "paid": {}, "rejected": {}, "received": {
-        "INV-1": {"date": "2026-10-20", "amount": "1000.00", "payments": ["wise:wise-2"],
-                  "snapshot": {"client": "Acme Studio", "amount": "2500", "currency": "USD", "due": "2026-10-01"}}}}), encoding="utf-8")
-    capsys.readouterr()
-    rows = run(tmp_path)
-    assert "rolled back" in capsys.readouterr().err and load_received(ledger) == {}
-    assert "INV-1" in load_reconfirm(ledger)
-    # 1000 + 1500 are both suggested exactly once: 2500, not 3500
-    assert rows["INV-1"]["status"] == "suggested_paid" and rows["INV-1"]["paid"] == "2500.00"
-    confirm(tmp_path, "INV-1")
-    assert run(tmp_path)["INV-1"]["status"] == "paid" and load_reconfirm(ledger) == {}
-
-
-def test_a_rolled_back_part_payment_that_no_longer_shows_up_is_never_chased_for_the_full_amount(tmp_path):
-    setup(tmp_path, "INV-1,Acme Studio,a@acme.example,2500,USD,2026-09-01,2026-10-01\n", '"","05-10-2026","10.00","USD","other","","Zed"\n')
-    run(tmp_path)
-    (tmp_path / "out" / "sent.json").write_text(json.dumps({"received": {
-        "INV-1": {"date": "2026-10-20", "amount": "1000.00", "payments": ["wise:wise-2"], "snapshot": {}}}}), encoding="utf-8")
-    rows = run(tmp_path)
-    assert rows["INV-1"]["status"] == "needs_review" and "re-confirm after upgrade" in rows["INV-1"]["why_not_paid"]
-    assert rows["INV-1"]["draft_file"] == ""
 
 
 # ---- no absolute paths in anything shareable -----------------------------------------------------------

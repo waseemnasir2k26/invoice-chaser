@@ -32,14 +32,14 @@ from __future__ import annotations
 import re
 import unicodedata
 from bisect import bisect_right
-from functools import lru_cache
+from functools import cache, lru_cache
 
 _PART = re.compile(r"[^\W\d_]+|\d+")
 _WORD = re.compile(r"[^\W\d_]+")
 _INNER_OK = re.compile(r"[ \t]{0,2}[-_/.#:]?[ \t]{0,2}")
 _CONTINUES = set("-_/.#:")  # after an id, these glue on more id (INV-1/2)
 _LEAD_GLUE = set("-_/.")  # before an id, these mean it is the tail of something longer (X-INV-1)
-_EMAIL_URL = re.compile(r"(?:https?://|ftp://|www\.)\S+|[\w.+%-]+@[\w-]+(?:\.[\w-]+)+", re.I)
+_EMAIL_URL = re.compile(r"(?:https?://|ftp://|www\.)\S+|[\w.+%-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
 
 # Rules the tests switch off one at a time to prove each test really depends on its rule.
 MIN_LETTERS = 2
@@ -57,30 +57,7 @@ FOREIGN_IDS = True
 #   PHRASES         word sequences
 # A client whose own name contains one of these (Chargebacks911, Pending Ventures, Refund Ltd) is never
 # matched automatically: the matcher reports "client name contains a refund word: please check".
-NEGATIVE_WORDS = frozenset("""
-refund refunds refunded refunding reversal reversals reverse reverses reversed reversing chargeback chargebacks
-return returns returned returning cancel cancels cancelled canceled cancelling canceling cancellation cancellations
-void voided dispute disputes disputed clawback repayment repaid reimbursement reimbursed reimburse restitution
-denied blocked rejected reject rejects declined decline declines bounced bounce failed fail fails failure failures
-pending nsf unpaid unsuccessful overdraft refusal refused
-storno storniert stornierung stornierungen stornieren rückbuchung rueckbuchung rückgabe rueckgabe retour retours
-retourné retournée annulé annulée annulation rejeté rejetée échoué echoué impayé impayée avoir
-reembolso reembolsos reembolsado devolución devolucion devoluciones devuelto anulado anulación anulacion rechazado
-fallido impago pendiente
-estorno estornado devolução devolucao devolvido cancelado recusado pendente falhou
-rimborso rimborsi rimborsato storno annullato respinto insoluto restituzione
-terugbetaling terugbetaald teruggestort restitutie creditnota geannuleerd afgewezen mislukt
-zwrot zwrotu zwroty zwrotem zwrócono anulowane odrzucone
-vrácení vráceno storna zrušeno zamítnuto
-возврат возврата возвраты возвращен возвращён отмена отменен отменён отклонен отклонён
-iade iadesi iptal reddedildi başarısız
-استرداد ارتجاع مرتجع مرفوض ملغي فشل
-واپسی منسوخ ناکام
-بازپرداخت برگشت
-החזר ביטול
-gagal ditolak dibatalkan
-refund
-""".split())
+NEGATIVE_WORDS = frozenset(["refund", "refunds", "refunded", "refunding", "reversal", "reversals", "reverse", "reverses", "reversed", "reversing", "chargeback", "chargebacks", "return", "returns", "returned", "returning", "cancel", "cancels", "cancelled", "canceled", "cancelling", "canceling", "cancellation", "cancellations", "void", "voided", "dispute", "disputes", "disputed", "clawback", "repayment", "repaid", "reimbursement", "reimbursed", "reimburse", "restitution", "denied", "blocked", "rejected", "reject", "rejects", "declined", "decline", "declines", "bounced", "bounce", "failed", "fail", "fails", "failure", "failures", "pending", "nsf", "unpaid", "unsuccessful", "overdraft", "refusal", "refused", "storno", "storniert", "stornierung", "stornierungen", "stornieren", "rückbuchung", "rueckbuchung", "rückgabe", "rueckgabe", "retour", "retours", "retourné", "retournée", "annulé", "annulée", "annulation", "rejeté", "rejetée", "échoué", "echoué", "impayé", "impayée", "avoir", "reembolso", "reembolsos", "reembolsado", "devolución", "devolucion", "devoluciones", "devuelto", "anulado", "anulación", "anulacion", "rechazado", "fallido", "impago", "pendiente", "estorno", "estornado", "devolução", "devolucao", "devolvido", "cancelado", "recusado", "pendente", "falhou", "rimborso", "rimborsi", "rimborsato", "storno", "annullato", "respinto", "insoluto", "restituzione", "terugbetaling", "terugbetaald", "teruggestort", "restitutie", "creditnota", "geannuleerd", "afgewezen", "mislukt", "zwrot", "zwrotu", "zwroty", "zwrotem", "zwrócono", "anulowane", "odrzucone", "vrácení", "vráceno", "storna", "zrušeno", "zamítnuto", "возврат", "возврата", "возвраты", "возвращен", "возвращён", "отмена", "отменен", "отменён", "отклонен", "отклонён", "iade", "iadesi", "iptal", "reddedildi", "başarısız", "استرداد", "ارتجاع", "مرتجع", "مرفوض", "ملغي", "فشل", "واپسی", "منسوخ", "ناکام", "بازپرداخت", "برگشت", "החזר", "ביטול", "gagal", "ditolak", "dibatalkan", "refund"])
 LONG_STEMS = (
     "rückerstattung", "rueckerstattung", "erstattung", "rückzahlung", "rueckzahlung", "rücklastschrift", "rucklastschrift",
     "gutschrift", "stornierung", "remboursement", "annulation", "restitution", "reembolso", "reembolsad",
@@ -151,7 +128,7 @@ class IdIndex:
         self.lengths = sorted({len(v) for v in self.by_parts})
         # id-like tokens of the same family (INV-1005) that are not in the file at all
         self._idlike = (re.compile(r"(?<![^\W_])(?:" + "|".join(sorted(map(re.escape, families), key=len, reverse=True))
-                                   + r")[ 	]{0,2}[-_/#:.]?[ 	]{0,2}\d+(?:[-/_.]\d+)*(?![^\W_])", re.I)
+                                   + r")[ 	]{0,2}[-_/#:.]?[ 	]{0,2}\d+(?:[-/_.]\d+)*(?![^\W_])", re.IGNORECASE)
                         if families else None)
 
     def find(self, text: str) -> frozenset:
@@ -316,7 +293,7 @@ SUFFIX_CLASS = {
 _WORD_OR_DIGIT = re.compile(r"[^\W_]+")
 
 
-@lru_cache(maxsize=None)
+@cache
 def company_key(name: str):
     """(sorted words, frozenset of legal-suffix classes), or None if the name has no usable words.
     Words are compared as a multiset ("Alpha Alpha" != "Alpha"), order-insensitively. Different

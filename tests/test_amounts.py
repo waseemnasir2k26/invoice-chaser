@@ -79,10 +79,8 @@ def test_decimal_comma_flag_end_to_end(tmp_path):
     (tmp_path / "w.csv").write_text('"TransferWise ID","Date","Amount","Currency","Description","Payment Reference","Payer Name"\n'
                                     '"W1","05-10-2026","1500.00","EUR","INV-7","INV-7","Acme"\n', encoding="utf-8")
     base = ["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--today", "2026-10-25"]
-    assert main(base + ["--out", str(tmp_path / "a")]) == 0
-    rows = list(csv.DictReader(open(tmp_path / "a" / "status.csv", encoding="utf-8")))
-    assert rows == []                                                      # refused as ambiguous: no invoice read
-    assert "ambiguous amount" in (tmp_path / "a" / "review.html").read_text(encoding="utf-8")
+    assert main(base + ["--out", str(tmp_path / "a")]) == 2              # refused as ambiguous: no invoice could be read
+    assert not (tmp_path / "a" / "status.csv").exists()
     assert main(base + ["--out", str(tmp_path / "b"), "--decimal-comma"]) == 0
     rows = list(csv.DictReader(open(tmp_path / "b" / "status.csv", encoding="utf-8")))
     assert rows[0]["status"] == "suggested_paid" and rows[0]["amount"] == "1500"

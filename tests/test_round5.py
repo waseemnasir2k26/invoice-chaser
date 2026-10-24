@@ -10,7 +10,7 @@ import pytest
 
 from conftest import assert_no_absolute_paths
 from invoice_chaser.cli import main
-from invoice_chaser.ledger import load_dropped, load_ledger, load_paid, load_rejected
+from invoice_chaser.ledger import load_ledger, load_paid, load_rejected
 from invoice_chaser.parsers import ParseOptions, parse_wise
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -85,24 +85,6 @@ def test_reexport_cannot_move_a_confirmation_onto_another_clients_payment(tmp_pa
     assert rows["INV-2"]["draft_file"] == ""
 
 
-def test_old_row_keyed_ledger_entries_are_dropped_with_a_warning_and_shown(tmp_path, capsys):
-    setup(tmp_path, TWO, ROW_A + ROW_B)
-    run(tmp_path)
-    ledger = tmp_path / "out" / "sent.json"
-    ledger.write_text(json.dumps({"sent": {}, "paid": {"INV-1": {"date": "2026-10-20", "note": "", "source": "confirm",
-                                                                 "payments": ["wise:wise-2"], "snapshot": {}}},
-                                  "received": {}, "rejected": {"INV-2": ["wise:wise-3", "wise:h-0123456789ab"]}}), encoding="utf-8")
-    capsys.readouterr()
-    rows = run(tmp_path)
-    err = capsys.readouterr().err
-    assert "wise:wise-2" in err and "wise:wise-3" in err and "row-numbered" in err
-    assert load_paid(ledger)["INV-1"]["payments"] == [] and rows["INV-1"]["status"] == "paid"
-    assert load_rejected(ledger) == {"INV-2": ["wise:h-0123456789ab"]}
-    assert load_dropped(ledger) == {"INV-1": ["wise:wise-2"], "INV-2": ["wise:wise-3"]}
-    assert "row-numbered" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
-    run(tmp_path)                                                           # the note stays on every run
-    assert "wise:wise-3" in capsys.readouterr().err
-
 
 # ---- B2: aging ------------------------------------------------------------------------
 
@@ -128,7 +110,7 @@ def test_a_waiting_review_becomes_stuck_and_an_internal_note_is_drafted(tmp_path
     assert "To: me@x.co" in note and "a@acme.example" not in note            # to YOU, never the client
     assert rows["INV-1"]["draft_file"] == ""                                 # and still no reminder to the client
     first = json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8"))
-    assert first == {"inv-1": {"first_seen": "2026-10-10"}}                  # keyed by invoice, persisted, not reset by later runs
+    assert first == {"schema": 1, "invoices": {"inv-1": {"first_seen": "2026-10-10"}}}                  # keyed by invoice, persisted, not reset by later runs
     assert "waiting for your decision for 8 day(s)" in note
 
 
@@ -145,7 +127,7 @@ def test_deciding_ends_the_wait(tmp_path):
     assert main(["mark-paid", "INV-1", "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
     rows = run(tmp_path, today="2026-10-25")
     assert rows["INV-1"]["status"] == "paid" and rows["INV-1"]["stuck"] == ""
-    assert json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8")) == {}                  # a decision ends the wait
+    assert json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8"))["invoices"] == {}      # a decision ends the wait
 
 
 def test_a_rejected_suggestion_is_chased_and_says_so(tmp_path):
@@ -245,7 +227,7 @@ def test_review_html_has_no_absolute_paths(tmp_path):
 def test_hand_edited_received_amounts_give_a_clean_error(tmp_path, capsys, bad):
     out = tmp_path / "o"
     main(["demo", "--out", str(out), "--keep-ledger"])
-    (out / "sent.json").write_text(json.dumps({"sent": {}, "paid": {}, "rejected": {}, "received": {
+    (out / "sent.json").write_text(json.dumps({"schema": 1, "sent": {}, "paid": {}, "rejected": {}, "received": {
         "INV-1002": {"date": "2026-10-20", "amount": bad, "payments": [], "snapshot": {}}}}), encoding="utf-8")
     capsys.readouterr()
     assert main(["demo", "--out", str(out), "--keep-ledger"]) == 2

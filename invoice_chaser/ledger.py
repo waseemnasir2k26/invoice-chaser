@@ -10,20 +10,23 @@ The tool suggests, you decide:
   sent      reminders you actually sent (`invoice-chaser mark-sent INV-1`): the same stage is never
             drafted twice and the next draft can say "following my reminder of <date>".
 
-Format: {"sent": {"INV-1": [{"stage": "nudge", "date": "2026-10-08"}]},
-         "paid": {"INV-2": {"date": "2026-10-20", "note": "", "source": "confirm", "payments": ["W1"],
-                            "snapshot": {"client": "Acme", "amount": "1200.00", "currency": "USD", "due": "2026-10-01"}}},
-         "received": {"INV-3": {"date": "2026-10-20", "amount": "1000.00", "payments": ["W2"], "snapshot": {...}}},
-         "rejected": {"INV-4": ["P9"]}}
-A legacy flat file ({"INV-1": [...]}) is still read as the "sent" section.
+Format: {"schema": 1,
+         "sent": {"INV-1": [{"stage": "nudge", "date": "2026-10-08"}]},
+         "paid": {"INV-2": {"date": "2026-10-20", "note": "", "source": "confirm", "payments": ["wise:W1"],
+                            "snapshot": {"client": "Acme", "amount": "1200.00", "currency": "USD", "due": "2026-10-01"},
+                            "payment_rows": [{"key": "wise:W1", "date": "2026-10-03", "amount": "1200.00", "currency": "USD", "payer": "acme ltd", "text": ""}]}},
+         "received": {"INV-3": {"date": "2026-10-20", "amount": "1000.00", "payments": [...], "snapshot": {...}, "payment_rows": [...]}},
+         "rejected": {"INV-4": ["wise:P9"]}, "rejected_rows": {"INV-4": {"wise:P9": {"date": ..., "amount": ..., "currency": ..., "payer": ..., "text": ...}}}}
+
+The file has a schema version. A file without one (or with an older or unknown one) is refused with a clear message, never
+guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions migrate old ledgers by
+fingerprint (date, amount, currency, payer), so a decision survives a change in how payment ids are made.
 """
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
-import re
 import shutil
 import time
 import uuid
@@ -33,21 +36,34 @@ from pathlib import Path
 
 from .ladder import STAGES
 
-_SECTIONS = ("sent", "paid", "received", "rejected", "rejected_rows", "dropped", "reconfirm")
+SCHEMA = 1
+_SECTIONS = ("sent", "paid", "received", "rejected", "rejected_rows")
+PRE_RELEASE = ("ledger from a pre-release build (no schema version): start fresh, or run `invoice-chaser ledger reset --backup` "
+               "to keep a copy of it and begin a new one")
+
+
+def _empty() -> dict:
+    return {"schema": SCHEMA, **{k: {} for k in _SECTIONS}}
 
 
 def _read(path: str | Path) -> dict:
     p = Path(path)
     if not p.exists():
-        return {k: {} for k in _SECTIONS}
+        return _empty()
     try:
         data = json.loads(p.read_text(encoding="utf-8-sig"))
-        if not isinstance(data, dict):
-            raise ValueError("not an object")
-        if not set(data) & set(_SECTIONS):  # legacy flat format
-            data = {"sent": data}
-        out = {k: data.get(k, {}) for k in _SECTIONS}
-        if not all(isinstance(v, dict) for v in out.values()):
+    except ValueError as exc:
+        raise ValueError(f"{p.name}: not a valid sent ledger ({exc})") from exc
+    if not isinstance(data, dict) or "schema" not in data:
+        raise ValueError(f"{p.name}: {PRE_RELEASE}")
+    if data["schema"] != SCHEMA:
+        if isinstance(data["schema"], int) and data["schema"] > SCHEMA:
+            raise ValueError(f"{p.name}: this ledger was written by a newer invoice-chaser (schema {data['schema']}, this one reads {SCHEMA}): "
+                             f"upgrade invoice-chaser instead of editing the ledger")
+        raise ValueError(f"{p.name}: schema {data['schema']!r} is not understood by this version. {PRE_RELEASE}")
+    try:
+        out = {"schema": SCHEMA, **{k: data.get(k, {}) for k in _SECTIONS}}
+        if not all(isinstance(out[k], dict) for k in _SECTIONS):
             raise ValueError("every section must be an object")
         for entries in out["sent"].values():
             for e in entries:
@@ -63,8 +79,6 @@ def _read(path: str | Path) -> dict:
         for e in out["rejected"].values():
             if not isinstance(e, list):
                 raise ValueError("rejected entries must be lists")
-        if not isinstance(out["dropped"], dict) or not isinstance(out["reconfirm"], dict) or not isinstance(out["rejected_rows"], dict):
-            raise ValueError("dropped, reconfirm and rejected_rows must be objects")
     except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
         raise ValueError(f"{p.name}: not a valid sent ledger ({exc})") from exc
     return out
@@ -148,7 +162,7 @@ def _clean_orphans(path: Path, older_than: float = 60.0) -> None:
 
 def _write(path: str | Path, data: dict) -> None:
     """Atomic write of the ledger with a .bak of the previous version. Call inside _locked()."""
-    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), backup=True)
+    atomic_write_text(path, json.dumps({"schema": SCHEMA, **{k: v for k, v in data.items() if k != "schema"}}, indent=2, ensure_ascii=False), backup=True)
 
 
 def load_ledger(path: str | Path) -> dict[str, list[dict]]:
@@ -173,15 +187,6 @@ def load_rejected_rows(path: str | Path) -> dict[str, dict]:
     return _read(path)["rejected_rows"]
 
 
-def load_dropped(path: str | Path) -> dict[str, list[str]]:
-    return _read(path)["dropped"]
-
-
-def load_reconfirm(path: str | Path) -> dict[str, dict]:
-    """Invoices whose confirmed part-payment was rolled back by a migration: they need your confirm again."""
-    return _read(path)["reconfirm"]
-
-
 def load_payment_rows(path: str | Path) -> list[dict]:
     """Every payment you confirmed, as it looked then: {invoice, key, date, amount, currency, payer}. Used to
     recognise the same payment again after a cosmetic re-export changed its id."""
@@ -193,49 +198,37 @@ def load_payment_rows(path: str | Path) -> list[dict]:
     return rows
 
 
-# Before 1.1.1 a payment without a transaction id was keyed by its ROW NUMBER in the export (wise:wise-3).
-# Row numbers move when you export again, so such a key could land on a different client's payment.
-_ROW_KEY = re.compile(r"^(wise|payoneer|bank):(wise|payoneer|bank)-\d+$")
-
-
-def migrate_row_keys(path: str | Path) -> list[str]:
-    """Drop ledger entries keyed by a row number. Returns one message per dropped key (also kept in the
-    ledger's "dropped" section, so review.html keeps showing them).
-
-    A confirmed invoice stays confirmed; only its row-keyed payment reference goes. A confirmed PART-payment is
-    rolled back instead: its amount is no longer tied to any payment we can recognise, and keeping it would count
-    the same payment twice when it is suggested again. The invoice is flagged "re-confirm after upgrade"."""
+def reset_ledger(path: str | Path, backup: bool) -> Path | None:
+    """Start a fresh ledger. With backup=True the old file is kept as <name>.pre-release-<timestamp>. Returns the backup path."""
     p = Path(path)
-    if not p.exists():
-        return []
+    kept = None
+    with _locked(path):
+        if p.exists():
+            if not backup:
+                raise ValueError("resetting deletes your decisions (confirmed payments, rejections, sent reminders): add --backup to keep a copy")
+            kept = p.with_name(f"{p.name}.pre-release-{time.strftime('%Y%m%d-%H%M%S')}")
+            shutil.copy2(p, kept)
+        _write(path, _empty())
+    return kept
+
+
+def rebind_keys(path: str | Path, mapping: dict[str, str]) -> None:
+    """Point confirmed and rejected payments at the keys they have TODAY (old key -> new key). Used when a payment is found again
+    by its fingerprint under a different id; the decision follows the payment instead of being dropped."""
+    if not mapping:
+        return
     with _locked(path):
         data = _read(path)
-        messages = []
-        for inv, entry in list(data["paid"].items()):
-            for k in [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]:
-                entry["payments"].remove(k)
-                data["dropped"].setdefault(inv, []).append(k)
-                messages.append(f"{inv}: dropped payment reference {k} from your confirmation (row-numbered ids are not stable)")
-        for inv, entry in list(data["received"].items()):
-            bad = [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]
-            if bad:
-                del data["received"][inv]
-                data["dropped"].setdefault(inv, []).extend(bad)
-                data["reconfirm"][inv] = {"amount": entry["amount"], "date": entry["date"]}
-                messages.append(f"{inv}: your confirmed part-payment of {entry['amount']} was rolled back because it was tied to "
-                                f"row-numbered payment ids ({', '.join(bad)}): re-confirm after upgrade")
-        for inv, keys in list(data["rejected"].items()):
-            bad = [k for k in keys if _ROW_KEY.match(k)]
-            for k in bad:
-                keys.remove(k)
-                data["dropped"].setdefault(inv, []).append(k)
-                messages.append(f"{inv}: your rejection of {k} was dropped (row-numbered ids are not stable): "
-                                f"if that payment is suggested again, reject it again")
-            if not keys:
-                del data["rejected"][inv]
-        if messages:
-            _write(path, data)
-        return messages
+        for section in ("paid", "received"):
+            for entry in data[section].values():
+                entry["payments"] = [mapping.get(k, k) for k in entry.get("payments", [])]
+                for row in entry.get("payment_rows", []):
+                    row["key"] = mapping.get(row.get("key"), row.get("key"))
+        for inv, keys in data["rejected"].items():
+            data["rejected"][inv] = [mapping.get(k, k) for k in keys]
+        for inv, rows in data["rejected_rows"].items():
+            data["rejected_rows"][inv] = {mapping.get(k, k): v for k, v in rows.items()}
+        _write(path, data)
 
 
 def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> None:
@@ -257,7 +250,6 @@ def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "", s
         data["paid"][invoice_id] = {"date": when.isoformat(), "note": note, "source": source,
                                     "payments": list(payments), "snapshot": snapshot or {}, "payment_rows": list(rows)}
         data["received"].pop(invoice_id, None)  # fully paid now
-        data["reconfirm"].pop(invoice_id, None)
         _write(path, data)
 
 
@@ -269,7 +261,6 @@ def record_received(path: str | Path, invoice_id: str, when: date, amount: Decim
         data = _read(path)
         data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
                                         "snapshot": snapshot or {}, "payment_rows": list(rows)}
-        data["reconfirm"].pop(invoice_id, None)
         _write(path, data)
 
 
@@ -291,7 +282,6 @@ def apply_confirmations(path: str | Path, ops: list[dict]) -> None:
                     raise ValueError(f"received amount {op['amount']!r} must be a finite, non-negative number")
                 data["received"][inv] = {"date": op["when"].isoformat(), "amount": str(amount), "payments": list(op["keys"]),
                                          "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
-            data["reconfirm"].pop(inv, None)
         _write(path, data)
 
 
@@ -312,7 +302,7 @@ def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
         data = _read(path)
         want = invoice_id.strip().lower()
         hit = False
-        for section in ("paid", "received", "reconfirm"):
+        for section in ("paid", "received"):
             for k in [k for k in data[section] if str(k).strip().lower() == want]:
                 del data[section][k]
                 hit = True

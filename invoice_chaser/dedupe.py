@@ -107,6 +107,32 @@ def _same_payer(a: Payment, b: Payment) -> bool:
     return False
 
 
+def flag_same_payment_in_two_exports(payments: list[Payment], named_ids, warn) -> None:
+    """The same payment often appears in two exports under different payer names ("Acme Ltd" in Wise, "Jane Okafor" in the bank
+    export). Same amount and currency, within two days, from two different sources, and either the same invoice id named in both
+    texts or both payers blank: both are held in needs review. Counting both could mark an invoice paid twice."""
+    groups: dict[tuple, list[Payment]] = {}
+    for p in payments:
+        groups.setdefault((p.currency, p.amount), []).append(p)
+    for group in groups.values():
+        group.sort(key=lambda p: p.date)
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if (b.date - a.date).days > 2:
+                    break
+                if a.source == b.source:
+                    continue
+                shared = set(named_ids(a)) & set(named_ids(b))
+                if shared or (not a.payer.strip() and not b.payer.strip()):
+                    for x, y in ((a, b), (b, a)):
+                        x.suspect = x.suspect or f"possible same payment seen in two exports ({y.source} {y.id})"
+                    inv = sorted(shared)[0] if shared else "<invoice>"
+                    warn(f"possible same payment seen in two exports: {a.source} {a.id} and {b.source} {b.id} ({a.amount} {a.currency}, "
+                         f"{a.date} / {b.date}). Both are held in needs review and neither is suggested as paid. Next step: check your "
+                         f"statement. If it is one payment, record it with `invoice-chaser confirm {inv} --payment <id>` naming just one of "
+                         f"them; if both are real, name both.")
+
+
 def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
     kept: list[Payment] = []
     seen: dict[tuple[str, str], Payment] = {}

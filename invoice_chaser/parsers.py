@@ -37,6 +37,7 @@ class ParseOptions:
     ignored: list[Payment] = field(default_factory=list)  # negative rows: refunds, fees, withdrawals
     # stable payment ids: see _Ids / finalize_ids
     pending: list = field(default_factory=list)
+    case_dup_ids: set = field(default_factory=set)  # lower-case invoice ids that appear twice with different capitals
     files_parsed: int = 0
     _cross: set = field(default_factory=set)
 
@@ -62,7 +63,7 @@ class ParseOptions:
         cross: set[str] = set()
         for key, recs in groups.items():
             for k, rec in enumerate(recs, 1):
-                rec["payment"].id = "h-" + hashlib.sha256(f"{key}#{k}".encode("utf-8")).hexdigest()[:12]
+                rec["payment"].id = "h-" + hashlib.sha256(f"{key}#{k}".encode()).hexdigest()[:12]
             if len({rec["file"] for rec in recs}) > 1:
                 cross.update(rec["payment"].id for rec in recs)
         self._cross = cross
@@ -308,7 +309,12 @@ def _bad_row(opts: ParseOptions, path, n: int, err: Exception) -> None:
 
 def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[Invoice]:
     opts = opts or ParseOptions()
-    fns, rows = _open_rows(path)
+    try:
+        fns, rows = _open_rows(path)
+    except ParseError as e:
+        if "file is empty" in str(e):
+            raise ParseError(f"no invoices found in {Path(path).name}: the file is empty") from e
+        raise
     cm = _colmap(fns)
     c_id = _need(cm, ["id", "invoiceid", "invoice", "invoicenumber", "invoiceno", "number"], "invoice id", path, fns)
     c_client = _need(cm, ["client", "clientname", "customer", "customername"], "client", path, fns)
@@ -321,7 +327,7 @@ def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[In
     c_contact = _pick(cm, ["contact", "contactname", "firstname"])
     c_last = _pick(cm, ["lastreminder", "lastreminderdate", "lastremindersent", "reminded"])
     note_date_ambiguity(path, [_get(r, c_iss) for r in rows] + [_get(r, c_due) for r in rows], opts)
-    out, seen = [], set()
+    out, seen, seen_norm = [], set(), {}
     for n, r in enumerate(rows, start=2):
         if not any((v or "").strip() for v in r.values() if isinstance(v, str)):
             continue
@@ -347,6 +353,13 @@ def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[In
         except ParseError as e:
             _bad_row(opts, path, n, e)
             continue
+        norm_id = " ".join(inv.id.casefold().split())
+        if norm_id in seen_norm:  # INV-6001 and inv-6001: never merge them silently, and never guess which one is meant
+            opts.case_dup_ids.add(norm_id)
+            opts.warn(f"{Path(path).name} row {n}: duplicate invoice id (case differs): {seen_norm[norm_id]!r} and {inv.id!r}. Both are held in "
+                      f"needs review and no reminder is drafted for either. Next step: give each invoice its own id in the file, then run again.")
+        else:
+            seen_norm[norm_id] = inv.id
         seen.add(inv.id)
         out.append(inv)
     return out
@@ -384,7 +397,7 @@ class _Ids:
     def payment(self, source: str, real_id: str, d: date, amount: Decimal, currency: str, description: str, payer: str) -> Payment:
         pay = Payment(real_id or "h-pending", d, amount, currency, description, payer, source)
         if not real_id:
-            clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())  # noqa: E731
+            clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())
             ck = company_key(payer) if payer else None
             who = "" if ck is None else " ".join(ck[0]) + "/" + ",".join(sorted(ck[1]))
             key = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description), who])
