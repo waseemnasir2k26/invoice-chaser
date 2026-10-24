@@ -14,7 +14,7 @@ from .config import load_config, validate
 from .drafts import valid_email, write_drafts
 from .ladder import STAGES
 from .dedupe import dedupe_payments
-from .ledger import ci, highest_sent, last_sent_date, load_ledger, load_paid, record_paid, record_sent
+from .ledger import ci, highest_sent, last_sent_date, load_ledger, load_paid, record_paid, record_sent, unrecord_paid
 from .llm import personal_line
 from .matching import match_all_ex
 from .parsers import (
@@ -48,7 +48,8 @@ def run(args) -> int:
     llm_keys = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
     opts = ParseOptions(date_order=getattr(args, "date_format", None), default_currency=cfg.default_currency,
-                        strict=getattr(args, "strict", False))
+                        strict=getattr(args, "strict", False),
+                        decimal_comma=True if getattr(args, "decimal_comma", False) else cfg.decimal_comma)
     invoices = read_invoices(args.invoices, opts)
     payments = []
     for p in args.wise or []:
@@ -123,7 +124,8 @@ def run(args) -> int:
         r.draft_status = "drafted"
 
     out.mkdir(parents=True, exist_ok=True)
-    write_drafts(items, out, warnings)
+    settled = {r.invoice.id.lower() for r in results if r.status in ("paid", "void")}
+    write_drafts(items, out, warnings, settled)
     drafts = {it["invoice_id"]: it["file"] for it in items}
     write_status_csv(results, drafts, out / "status.csv")
     (out / "review.html").write_text(render_html(results, leftovers, drafts, today, warnings, early, opts.ignored, str(args.out)), encoding="utf-8")
@@ -196,8 +198,22 @@ def mark_sent(args) -> int:
 def mark_paid(args) -> int:
     invoice_id, when = _resolve_invoice(args)
     path = _ledger_path(args)
+    existing = ci(load_paid(path)).get(invoice_id.strip().lower())
+    if existing:
+        print(f"WARNING: {invoice_id} is already marked paid (on {existing['date']}); nothing changed. "
+              f"Run `invoice-chaser unmark-paid {invoice_id}` first to change it.", file=sys.stderr)
+        return 0
     record_paid(path, invoice_id, when, args.note or "")
     print(f"recorded: {invoice_id} confirmed paid on {when} -> {path}")
+    print("  re-run `invoice-chaser run` to update the report")
+    return 0
+
+
+def unmark_paid(args) -> int:
+    path = _ledger_path(args)
+    if not unrecord_paid(path, args.invoice):
+        raise ValueError(f"{args.invoice} is not marked paid in {path}")
+    print(f"removed: {args.invoice} is no longer marked paid -> {path}")
     print("  re-run `invoice-chaser run` to update the report")
     return 0
 
@@ -209,7 +225,7 @@ def demo(args) -> int:
         payoneer=[str(d / "payoneer-transactions.csv")], bank=[str(d / "bank-export.csv")],
         mapping=str(d / "bank-mapping.json"), config=str(d / "invoice-chaser.json"),
         templates=None, out=args.out, today=args.today or DEMO_TODAY.isoformat(),
-        tone=args.tone, sender_name=None, llm=False, ledger=None, date_format=None, strict=False)
+        tone=args.tone, sender_name=None, llm=False, ledger=None, date_format=None, strict=False, decimal_comma=False)
     return run(a)
 
 
@@ -229,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", default="out")
     r.add_argument("--ledger", help="sent.json path (default: <out>/sent.json)")
     r.add_argument("--date-format", choices=["dmy", "mdy", "ymd"], help="read dates in this order (default: auto, day-first when ambiguous)")
+    r.add_argument("--decimal-comma", action="store_true", help="amounts are written 1.234,56 (default: only unambiguous amounts are read)")
     r.add_argument("--strict", action="store_true", help="abort on the first bad row instead of skipping it with a warning")
     r.add_argument("--today", help="YYYY-MM-DD (default: today)")
     r.add_argument("--tone", choices=["friendly", "neutral", "firm"])
@@ -251,6 +268,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--force", action="store_true", help="record an id that is not in <out>/status.csv")
     m.set_defaults(fn=mark_sent)
     mp.set_defaults(fn=mark_paid)
+    um = sub.add_parser("unmark-paid", help="undo a mark-paid confirmation")
+    um.add_argument("invoice")
+    um.add_argument("--out", default="out")
+    um.add_argument("--ledger", help="sent.json path (default: <out>/sent.json)")
+    um.set_defaults(fn=unmark_paid)
 
     d = sub.add_parser("demo", help="run on the bundled synthetic samples")
     d.add_argument("--out", default="out")
@@ -266,4 +288,8 @@ def main(argv=None) -> int:
         return args.fn(args)
     except (ParseError, TemplateError, ValueError, ArithmeticError, FileNotFoundError) as e:
         print(f"error: {e}", file=sys.stderr)
+        return 2
+    except (MemoryError, RecursionError):
+        print("error: the input is too large or too repetitive to process (out of memory or recursion limit). "
+              "Split the exports into smaller date ranges and try again.", file=sys.stderr)
         return 2

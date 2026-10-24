@@ -65,7 +65,7 @@ def test_wise_missing_column_lists_headers(tmp_path):
         parse_wise(f)
 
 
-@pytest.mark.parametrize("s,v", [("1,200.00", "1200.00"), ("$1,200", "1200"), ("1.234,56", "1234.56"),
+@pytest.mark.parametrize("s,v", [("1,200.00", "1200.00"), ("$1,200.00", "1200.00"), ("1.234,56", "1234.56"),
                                  ("12,50", "12.50"), ("(100.00)", "-100.00"), ("-5", "-5")])
 def test_parse_amount(s, v):
     assert parse_amount(s) == Decimal(v)

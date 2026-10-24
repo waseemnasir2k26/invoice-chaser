@@ -47,9 +47,12 @@ def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
     for p in kept:
         groups.setdefault((p.currency, p.amount), []).append(p)
     for group in groups.values():
+        group.sort(key=lambda p: p.date)
         for i, a in enumerate(group):
             for b in group[i + 1:]:
-                if a.source != b.source and abs((a.date - b.date).days) <= 1 and _same_payer(a, b):
+                if (b.date - a.date).days > 1:  # sorted by date: nothing later can be a duplicate of a
+                    break
+                if a.source != b.source and _same_payer(a, b):
                     a.suspect = a.suspect or f"may be the same payment as {b.source} {b.id}"
                     b.suspect = b.suspect or f"may be the same payment as {a.source} {a.id}"
                     warn(f"possible duplicate across sources: {a.source} {a.id} and {b.source} {b.id} "

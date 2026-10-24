@@ -1,23 +1,22 @@
 """Payment -> invoice matching.
 
-A false "paid" is the worst thing this tool can do (the client is never chased), so the
-rules are asymmetric. A pair is AUTO-matched (counted as paid) only when
+WHAT COUNTS AS PAID is decided by the table in decision.py (invoice id as a strict whole token,
+or exact amount from the client itself). This module finds candidate pairs without ever
+building the all-pairs product, applies that table, and allocates payments to invoices.
 
-    the invoice id appears in the payment text
- OR the amount is exact AND the payer is the client: every client-name word equals a
-    payer word (whole words, not substrings) and the payer has no extra words other than
-    legal suffixes (Ltd, LLC, Inc, GmbH, Pvt, Co ...).
-
-Everything else that looks plausible is a SUGGESTION: the invoice becomes "needs review",
-nothing is counted as paid, and no reminder is drafted. Confidence (0..1) is for ordering
-and display:
+Confidence (0..1) is only for ordering and display:
     invoice id in payment text   +0.60
     amount equal (in tolerance)  +0.45   (lower: +0.10, higher: +0.05)
     client name similarity       +0.30 * similarity (>= 0.6)
+
+Candidate pairs per invoice are bounded: payments that name the invoice id, payments from a
+payer who IS the client inside the date window (the K nearest by date), and payments with the
+exact invoice amount, but only when there are at most K of those. If more than K payments share
+the amount and nothing else identifies them, the invoice goes to "needs review" in bulk: it is
+never paired with all of them.
 """
 from __future__ import annotations
 
-import re
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
@@ -27,35 +26,22 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 
 from .config import Config
+from .decision import IdIndex, company_key, has_negative_context, same_company
 from .ladder import days_overdue, stage_for
 from .models import Invoice, InvoiceResult, Match, Payment
+
+import re
 
 SETTLED = {"paid", "settled"}
 VOID = {"void", "voided", "cancelled", "canceled", "written off", "writtenoff"}
 _SUFFIXES = {"ltd", "limited", "llc", "llp", "inc", "incorporated", "co", "corp", "corporation", "gmbh", "pvt", "pty", "sa", "bv", "the"}
-NAME_LOOKBACK_DAYS = 60  # name-only candidates are searched from this long before the invoice date
-
-_TOKEN = re.compile(r"[a-z]+|\d+")
-
-
-def _tokens(text: str) -> list[str]:
-    return _TOKEN.findall((text or "").lower())
+NAME_LOOKBACK_DAYS = 60  # name-path candidates are searched from this long before the invoice date
+MAX_CANDIDATES = 20  # K: candidates per invoice from the amount / payer indexes
 
 
-@lru_cache(maxsize=None)
-def _ref_pattern(invoice_id: str):
-    tokens = re.findall(r"[A-Za-z]+|\d+", invoice_id)
-    if not tokens:
-        return None
-    pat = r"(?<![A-Za-z0-9])" + r"[\s\-_#./]*".join(re.escape(t) for t in tokens) + r"(?![A-Za-z0-9])"
-    return re.compile(pat, re.IGNORECASE)
-
-
-def ref_hit(invoice_id: str, text: str) -> bool:
-    """True if the invoice id appears in text, tolerant of separators (INV-12, INV 12, inv#12)
-    but not of longer ids (INV-120 must not match INV-12)."""
-    pat = _ref_pattern(invoice_id)
-    return bool(pat and text and pat.search(text))
+def ref_hit(invoice_id: str, text: str, prefixes=()) -> bool:
+    """True if the invoice id appears in text as a complete token (see decision.IdIndex)."""
+    return invoice_id in IdIndex([invoice_id], prefixes).find(text)
 
 
 @lru_cache(maxsize=None)
@@ -65,20 +51,9 @@ def norm_name(s: str) -> str:
     return " ".join(w for w in s.split() if w not in _SUFFIXES)
 
 
-@lru_cache(maxsize=None)
-def _name_words(s: str) -> frozenset:
-    return frozenset(norm_name(s).split())
-
-
-def _prefixes(normed: str) -> frozenset:
-    return frozenset(w[:4] for w in normed.split())
-
-
 def strong_name(client: str, payer: str) -> bool:
-    """The payer IS the client: same words once legal suffixes are ignored. Whole words only,
-    so "Acme" != "Acme Holdings", "Tom Lee" != "Tom Leeds", "Alpha Studio" != "Alpha Labs"."""
-    c = _name_words(client)
-    return bool(c) and c == _name_words(payer)
+    """The payer IS the client (see decision.same_company)."""
+    return same_company(client, payer)
 
 
 @lru_cache(maxsize=262144)
@@ -90,8 +65,7 @@ def _text_sim(c: str, t: str) -> float:
     sm = SequenceMatcher(None)
     sm.set_seq2(c)
     sm.set_seq1(t)
-    # Only values >= 0.6 matter downstream, so a cheap upper bound below that is returned as is.
-    best = sm.quick_ratio()
+    best = sm.quick_ratio()  # only values >= 0.6 matter downstream
     if best >= 0.6:
         best = sm.ratio()
     if len(tw) > len(cw) + 1:  # long text (a description): also compare word windows of the client's length
@@ -104,7 +78,7 @@ def _text_sim(c: str, t: str) -> float:
 
 
 def name_similarity(client: str, *texts: str) -> float:
-    """Fuzzy 0..1 similarity, used for ordering and display only. Never decides "paid" by itself."""
+    """Fuzzy 0..1 similarity, for ordering and display only. It never decides "paid"."""
     c = norm_name(client)
     if not c:
         return 0.0
@@ -140,25 +114,16 @@ class Early:
 
 @dataclass
 class _Info:
-    """Per-payment text features, computed once."""
+    """Per-payment features, computed once."""
     text: str
-    tokens: frozenset
-    prefixes: frozenset
+    ids: frozenset  # invoice ids named in the text (strict whole tokens)
+    neg: bool  # refund / reversal wording
 
 
 @dataclass
 class _Inv:
-    """Per-invoice features, computed once."""
     inv: Invoice
     tol: Decimal
-    itoks: list
-    cpre: frozenset
-
-
-def _info(p: Payment) -> _Info:
-    text = f"{p.description} {p.payer}"
-    return _Info(text, frozenset(_tokens(text)),
-                 _prefixes(norm_name(p.payer)) | _prefixes(norm_name(p.description)))
 
 
 def _rate(pay_cur: str, inv_cur: str, rates: dict[str, str]) -> Decimal | None:
@@ -176,25 +141,36 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
     elif (pay.date - inv.issued).days > cfg.date_window_days:
         problem = f"dated {(pay.date - inv.issued).days} days after the invoice (window is {cfg.date_window_days})"
     conv = pay.amount * rate
-    ref = bool(ctx.itoks) and all(t in info.tokens for t in ctx.itoks) and ref_hit(inv.id, info.text)
+    ids = info.ids
+    ref = inv.id in ids
+    unique = ref and len(ids) == 1
     exact = conv == inv.amount
+    within = abs(conv - inv.amount) <= ctx.tol
+    less = conv < inv.amount and not within
+    more = conv > inv.amount and not within
+    company = same_company(inv.client, pay.payer)
+
+    # ---- the decision table (decision.py) ----
+    path_a = unique and not info.neg and (within or less)
+    path_b = (not ids) and exact and rate == 1 and company and not info.neg
+    auto = (path_a or path_b) and not pay.suspect and not problem
+
+    # ---- confidence: ordering and display only ----
     conf, why = 0.0, []
     if ref:
         conf += 0.60
         why.append(f"invoice id {inv.id} in payment text")
-    # fuzzy name matching only when the names share a word prefix: keeps this fast on big exports
-    strong = strong_name(inv.client, pay.payer)
-    sim = 1.0 if strong else 0.0
-    if not strong and ctx.cpre & info.prefixes:
-        sim = name_similarity(inv.client, pay.payer, pay.description)
+    sim = 1.0 if company else 0.0
+    if not company:
+        sim = name_similarity(inv.client, pay.payer, pay.description) if pay.payer or pay.description else 0.0
     if exact:
         conf += 0.45
         why.append("exact amount")
-    elif abs(conv - inv.amount) <= ctx.tol:
-        if ref or sim >= 0.6:  # a fee/FX shortfall is only a signal when something else points at this invoice
+    elif within:
+        if ref or sim >= 0.6:
             conf += 0.45
             why.append(f"amount within {cfg.fx_tolerance_pct:g}% tolerance ({conv:.2f} vs {inv.amount:.2f})")
-    elif conv < inv.amount:
+    elif less:
         conf += 0.10
         why.append(f"partial amount ({conv:.2f} of {inv.amount:.2f})")
     else:
@@ -202,31 +178,41 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
         why.append(f"amount higher than invoice ({conv:.2f} vs {inv.amount:.2f})")
     if sim >= 0.6:
         conf += 0.30 * sim
-        why.append(f"client name similarity {sim:.2f}")
+        why.append("payer is the client" if company else f"client name similarity {sim:.2f}")
     if rate != 1:
         why.append(f"converted at {rate}")
     conf = round(min(conf, 1.0), 2)
-    ok = ref or (exact and strong)
-    auto = conf >= cfg.auto_threshold and ok and not pay.suspect and not problem
+
     blocker = ""
-    if not auto:
+    if auto:
+        conf = max(conf, cfg.auto_threshold)
+    else:
         parts = []
         if problem:
             parts.append(f"payment {problem}")
         if pay.suspect:
             parts.append(pay.suspect)
-        if not ref:
+        if info.neg:
+            parts.append("the payment text mentions a refund, reversal or cancellation")
+        if ref and not unique:
+            parts.append("the payment text names several invoices (" + ", ".join(sorted(ids)) + ")")
+        elif ref and more:
+            parts.append(f"the amount is higher than the invoice ({conv:.2f} vs {inv.amount:.2f})")
+        elif not ref and ids:
+            parts.append("the payment text names a different invoice (" + ", ".join(sorted(ids)) + ")")
+        elif not ref:
             parts.append("no invoice id in the payment text")
-            if not strong:
-                parts.append(f"payer {pay.payer!r} is not exactly {inv.client!r}" if pay.payer
-                             else "the payment has no payer name")
+            if not company:
+                parts.append(f"payer {pay.payer!r} is not exactly {inv.client!r} (same words and the same Ltd/Inc/LLC kind)"
+                             if pay.payer else "the payment has no payer name")
             elif not exact:
-                parts.append("amount is not exact")
-        if conf < cfg.auto_threshold and not parts:
+                parts.append("the amount is not exact")
+            elif rate != 1:
+                parts.append("the payment is in another currency")
+        if not parts:
             parts.append(f"confidence {conf} is below {cfg.auto_threshold}")
         blocker = "; ".join(parts)
-        if conf >= cfg.auto_threshold:  # would have passed on score alone: show it as strictly below auto
-            conf = min(conf, max(round(cfg.auto_threshold - 0.01, 2), cfg.review_threshold))
+        conf = min(conf, max(round(cfg.auto_threshold - 0.01, 2), cfg.review_threshold))
     return Scored(conf, "; ".join(why), rate, auto, blocker, ref, problem)
 
 
@@ -235,8 +221,10 @@ def score_pair(inv: Invoice, pay: Payment, cfg: Config) -> Scored | None:
     rate = _rate(pay.currency, inv.currency, cfg.fx_rates)
     if rate is None:
         return None
-    ctx = _Inv(inv, inv.amount * Decimal(str(cfg.fx_tolerance_pct)) / 100, _tokens(inv.id), _prefixes(norm_name(inv.client)))
-    s = _score(ctx, pay, _info(pay), cfg, rate)
+    index = IdIndex([inv.id], cfg.ref_prefixes)
+    info = _Info(f"{pay.description} {pay.payer}", index.find(f"{pay.description} {pay.payer}"),
+                 has_negative_context(f"{pay.description} {pay.payer}"))
+    s = _score(_Inv(inv, inv.amount * Decimal(str(cfg.fx_tolerance_pct)) / 100), pay, info, cfg, rate)
     return None if s.date_problem else s
 
 
@@ -246,18 +234,17 @@ def match_all(invoices, payments, today, cfg):
 
 
 def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, cfg: Config):
-    """Returns (results in invoice order, leftover [(Payment, remaining)], early [Early]).
-
-    Candidate pairs come from three indexes instead of an all-pairs scan: payments with the
-    exact invoice amount, payments that contain the invoice id's rarest token, and payments
-    whose payer IS the client (inside the invoice's date window). Work per invoice is bounded
-    by those, so run time grows roughly linearly with the number of rows. Consequence: a
-    payment that differs in amount, carries no invoice id and has a fuzzy-only payer name is
-    not even considered; that is a deliberate trade for speed and for fewer false matches."""
+    """Returns (results in invoice order, leftover [(Payment, remaining)], early [Early])."""
     tolpct = Decimal(str(cfg.fx_tolerance_pct)) / 100
     active = [i for i in invoices if i.status not in SETTLED and i.status not in VOID]
+    K = MAX_CANDIDATES
 
-    infos = [_info(p) for p in payments]
+    index = IdIndex((i.id for i in invoices), cfg.ref_prefixes)  # all ids: a paid invoice's id still makes a text ambiguous
+    infos = []
+    for p in payments:
+        text = f"{p.description} {p.payer}"
+        infos.append(_Info(text, index.find(text), has_negative_context(text)))
+
     by_cur: dict[str, list[int]] = {}
     for pi, p in enumerate(payments):
         by_cur.setdefault(p.currency, []).append(pi)
@@ -265,14 +252,14 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     for cur, idxs in by_cur.items():
         idxs.sort(key=lambda i: payments[i].amount)
         amt_idx[cur] = ([payments[i].amount for i in idxs], idxs)
-    tok_idx: dict[str, list[int]] = {}
-    payer_raw: dict[frozenset, list[tuple[int, int]]] = {}
+    by_id: dict[str, list[int]] = defaultdict(list)
+    payer_raw: dict[tuple, list[tuple[int, int]]] = defaultdict(list)
     for pi, inf in enumerate(infos):
-        for t in inf.tokens:
-            tok_idx.setdefault(t, []).append(pi)
-        words = _name_words(payments[pi].payer)
-        if words:
-            payer_raw.setdefault(words, []).append((payments[pi].date.toordinal(), pi))
+        for iid in inf.ids:
+            by_id[iid].append(pi)
+        key = company_key(payments[pi].payer) if payments[pi].payer else None
+        if key:
+            payer_raw[key].append((payments[pi].date.toordinal(), pi))
     payer_idx = {}
     for key, lst in payer_raw.items():
         lst.sort()
@@ -281,6 +268,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     eps = Decimal("0.0000001")
     pairs = []
     early: list[Early] = []
+    bulk: dict[str, int] = {}  # invoice id -> number of same-amount payments, too many to pair
     for inv in active:
         rates = {}
         for cur in by_cur:
@@ -290,22 +278,28 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         if not rates:
             continue
         tol = inv.amount * tolpct
-        cand: set[int] = set()
+        cand: set[int] = set(by_id.get(inv.id, ()))
+        n_same = 0
         for cur, r in rates.items():
             amts, idxs = amt_idx[cur]
-            # exact amounts only: a +-tolerance band grows with the export and matches unrelated payments.
-            # Fee/FX shortfalls are found through the invoice id or the client name instead.
             lo = bisect_left(amts, inv.amount / r - eps)
             hi = bisect_right(amts, inv.amount / r + eps)
-            cand.update(idxs[lo:hi])
-        ctx = _Inv(inv, tol, _tokens(inv.id), _prefixes(norm_name(inv.client)))
-        if ctx.itoks:
-            cand.update(min((tok_idx.get(t, ()) for t in ctx.itoks), key=len))
-        key = _name_words(inv.client)
-        if key in payer_idx:  # payments from exactly this client, inside the invoice's date window
+            n_same += hi - lo
+            if n_same <= K:
+                cand.update(idxs[lo:hi])
+        if n_same > K:  # a shared price point: pairing would be quadratic and meaningless
+            bulk[inv.id] = n_same
+        key = company_key(inv.client)
+        if key in payer_idx:
             ords, idxs = payer_idx[key]
             o = inv.issued.toordinal()
-            cand.update(idxs[bisect_left(ords, o - NAME_LOOKBACK_DAYS):bisect_right(ords, o + cfg.date_window_days)])
+            a, b = bisect_left(ords, o - NAME_LOOKBACK_DAYS), bisect_right(ords, o + cfg.date_window_days)
+            if b - a > K:  # keep the K payments nearest the due date
+                mid = bisect_left(ords, inv.due.toordinal(), a, b)
+                a = max(a, min(mid - K // 2, b - K))
+                b = a + K
+            cand.update(idxs[a:b])
+        ctx = _Inv(inv, tol)
         for pi in sorted(cand):
             p = payments[pi]
             rate = rates.get(p.currency)
@@ -317,22 +311,22 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
                     early.append(Early(p, inv, sc.confidence, sc.date_problem))
                     pairs.append((sc, inv, pi))
                 continue
-            if sc.confidence >= cfg.review_threshold:
+            if sc.auto or sc.confidence >= cfg.review_threshold:
                 pairs.append((sc, inv, pi))
 
-    # An auto match that rests on name + amount alone (no invoice id) and fits more than one invoice
-    # is ambiguous: do not guess which invoice it settles.
+    # A name-path auto match (no invoice id) that fits more than one invoice is ambiguous: do not guess.
     by_payment: dict[int, list] = defaultdict(list)
     for item in pairs:
         if item[0].auto and not item[0].via_ref:
             by_payment[item[2]].append(item)
+    cap = max(round(cfg.auto_threshold - 0.01, 2), cfg.review_threshold)
     for pi, items in by_payment.items():
         if len(items) > 1:
             ids = ", ".join(i.id for _, i, _ in items)
             for s, inv, _ in items:
                 s.auto = False
                 s.blocker = f"payment fits several invoices ({ids}) and carries no invoice id to tell them apart"
-                s.confidence = min(s.confidence, max(round(cfg.auto_threshold - 0.01, 2), cfg.review_threshold))
+                s.confidence = min(s.confidence, cap)
     pairs.sort(key=lambda t: (-t[0].confidence, t[1].due, t[1].id, payments[t[2]].date))
 
     paid = {i.id: Decimal(0) for i in invoices}
@@ -382,6 +376,10 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         elif sg:
             st, out, stage = "needs_review", inv.amount, None
             why = "; ".join(f"{m.payment_id}: {m.blocker}" for m in sg)
+        elif inv.id in bulk:
+            st, out, stage = "needs_review", inv.amount, None
+            why = (f"{bulk[inv.id]} payments have exactly this amount and nothing identifies yours (no invoice id, "
+                   f"payer is not this client): too many to list; check your statement before chasing")
         elif overdue > 0:
             st, out, stage = "overdue", inv.amount, stage_for(overdue, cfg.stage_days)
             why = "no payment in the exports carries this invoice id, amount or client name"

@@ -23,6 +23,8 @@ class Config:
     previous_reminders: bool = False  # True: wording may say "following my earlier reminder"
     pause_work_on_final: bool = False  # True: final/escalation drafts include the pause-work sentence
     reply_within_days: int = 7  # deadline wording in final/escalation drafts
+    ref_prefixes: list[str] = field(default_factory=list)  # e.g. ["INV"]: lets all-digit invoice ids (2026001) match "INV 2026001"
+    decimal_comma: bool | None = None  # None: read only unambiguous amounts; True: 1.234,56; False: 1,234.56
     default_currency: str = ""  # what a bare "$" in your files means, e.g. "USD"
 
 
@@ -48,6 +50,11 @@ def validate(cfg: Config) -> Config:
             or not all(isinstance(x, int) and not isinstance(x, bool) and x >= 1 for x in cfg.stage_days)
             or sorted(set(cfg.stage_days)) != list(cfg.stage_days)):
         raise ValueError("config stage_days must be 4 strictly ascending integers >= 1, e.g. [1, 7, 14, 30]")
+    if (not isinstance(cfg.ref_prefixes, list)
+            or not all(isinstance(x, str) and re.fullmatch(r"[A-Za-z]{2,20}", x) for x in cfg.ref_prefixes)):
+        raise ValueError("config ref_prefixes must be a list of letter-only prefixes like [\"INV\"]")
+    if cfg.decimal_comma is not None and not isinstance(cfg.decimal_comma, bool):
+        raise ValueError("config decimal_comma must be true, false or null")
     for name in ("previous_reminders", "pause_work_on_final"):
         if not isinstance(getattr(cfg, name), bool):
             raise ValueError(f"config {name} must be true or false")

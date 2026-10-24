@@ -30,6 +30,7 @@ class ParseOptions:
     date_order: str | None = None  # dmy | mdy | ymd | None (auto: ISO, then day-first, then month-first)
     default_currency: str = ""  # what a bare "$" means
     strict: bool = False  # True: a bad row aborts the run instead of being skipped with a warning
+    decimal_comma: bool | None = None  # None: refuse ambiguous amounts like 1,234 / 1.500
     warnings: list[str] = field(default_factory=list)
     ignored: list[Payment] = field(default_factory=list)  # negative rows: refunds, fees, withdrawals
 
@@ -104,30 +105,93 @@ def note_date_ambiguity(path, raws: list[str], opts: ParseOptions) -> None:
 
 # ---------------------------------------------------------------- amounts and currency
 
-def parse_amount(s: str) -> Decimal:
-    t = (s or "").strip()
+_CURRENCY = r"(?:[A-Za-z]{3}|[€£$¥₹])"
+_AMOUNT = re.compile(
+    r"^(?P<s1>[+-])?\s*(?:" + _CURRENCY + r"\s*)?(?P<s2>[+-])?\s*(?P<num>[\d.,'   ’]*\d[\d.,'   ’]*|[.,]\d+)"
+    r"(?:\s+" + _CURRENCY + r")?\s*$")
+_GROUP_CHARS = "   '’"
+_MAX_AMOUNT = Decimal("1e12")
+
+
+def parse_amount(s: str, decimal_comma: bool | None = None) -> Decimal:
+    """Strict amount grammar: optional sign or (parentheses), optional currency symbol/code at either
+    end, then digits with ONE consistent thousands separator (comma, dot, space or apostrophe, always
+    groups of three) and at most one decimal separator. Anything else is a ParseError, never a guess.
+
+    decimal_comma: None reads only unambiguous forms (12.50, 12,50, 1,234.56, 1.234,56); "1,234" and
+    "1.500" are refused because they could be 1234 or 1.234. True means 1.234,56 style, False 1,234.56 style.
+    """
+    raw = s
+    t = (s or "").strip().replace("−", "-")
     if not t:
         raise ParseError("empty amount")
-    neg = t.startswith("(") and t.endswith(")")
-    t = re.sub(r"[^\d.,\-]", "", t)
-    if t.startswith("-"):
-        neg, t = True, t[1:]
-    t = t.replace("-", "")
-    if "," in t and "." in t:
-        if t.rfind(",") > t.rfind("."):  # 1.234,56
-            t = t.replace(".", "").replace(",", ".")
+    hint = " (set decimal_comma in the config, or pass --decimal-comma)"
+    neg = False
+    m = re.fullmatch(r"\((.*)\)", t)
+    if m:
+        neg, t = True, m.group(1).strip()
+    m = _AMOUNT.match(t) if len(t) <= 40 else None
+    if not m:
+        raise ParseError(f"unrecognised amount {raw!r}: expected digits like 1234.56 or 1,234.56 with an optional sign and currency")
+    if m.group("s1") == "-" or m.group("s2") == "-":
+        neg = True
+    num = m.group("num").strip()
+    chars = set(num) & {".", ","}
+    spaces = set(num) & set(_GROUP_CHARS)
+    if len(spaces) > 1:
+        raise ParseError(f"unrecognised amount {raw!r}: mixed thousands separators")
+    dec = grp = None
+    if spaces:
+        grp = next(iter(spaces))
+    if len(chars) == 2:
+        dec = "." if num.rfind(".") > num.rfind(",") else ","
+        if grp:
+            raise ParseError(f"unrecognised amount {raw!r}: mixed thousands separators")
+        grp = "," if dec == "." else "."
+        if (decimal_comma is True and dec != ",") or (decimal_comma is False and dec != "."):
+            raise ParseError(f"amount {raw!r} contradicts the decimal_comma setting")
+    elif len(chars) == 1:
+        c = next(iter(chars))
+        before, _, after = num.partition(c) if num.count(c) == 1 else ("", "", "")
+        if num.count(c) > 1:
+            if grp:
+                raise ParseError(f"unrecognised amount {raw!r}: mixed thousands separators")
+            grp = c
+            if (decimal_comma is True and c != ".") or (decimal_comma is False and c != ","):
+                raise ParseError(f"amount {raw!r} contradicts the decimal_comma setting")
+        elif decimal_comma is not None:
+            if (c == ",") == decimal_comma:
+                dec = c
+            elif grp:
+                raise ParseError(f"unrecognised amount {raw!r}: mixed thousands separators")
+            else:
+                grp = c
+        elif grp:
+            dec = c  # "1 234,5": the space groups, so the lone , or . is the decimal mark
         else:
-            t = t.replace(",", "")
-    elif "," in t:
-        # 1,234 (thousands) vs 12,50 (decimal comma)
-        if re.search(r",\d{2}$", t) and t.count(",") == 1:
-            t = t.replace(",", ".")
-        else:
-            t = t.replace(",", "")
+            before_d = before.replace(" ", "")
+            if len(after) == 3 and 1 <= len(before_d) <= 3 and not before_d.startswith("0"):
+                raise ParseError(f"ambiguous amount {raw!r}: could be {before_d}{after} or {before_d}.{after}" + hint)
+            dec = c
+    int_part, frac = (num.rsplit(dec, 1) if dec else (num, ""))
+    if dec and not re.fullmatch(r"\d+", frac):
+        raise ParseError(f"unrecognised amount {raw!r}")
+    if grp:
+        if not re.fullmatch(r"\d{1,3}(?:" + re.escape(grp) + r"\d{3})+", int_part):
+            raise ParseError(f"unrecognised amount {raw!r}: thousands separators must group digits in threes" + hint)
+        if int_part.startswith("0"):
+            raise ParseError(f"unrecognised amount {raw!r}: a thousands group cannot start with 0" + hint)
+        int_part = int_part.replace(grp, "")
+    elif not re.fullmatch(r"\d*", int_part):
+        raise ParseError(f"unrecognised amount {raw!r}")
+    if int_part == "" and frac == "":
+        raise ParseError(f"unrecognised amount {raw!r}")
     try:
-        v = Decimal(t)
+        v = Decimal((int_part or "0") + ("." + frac if frac else ""))
     except InvalidOperation as e:
-        raise ParseError(f"unrecognised amount {s!r}") from e
+        raise ParseError(f"unrecognised amount {raw!r}") from e
+    if v >= _MAX_AMOUNT:
+        raise ParseError(f"implausibly large amount {raw!r}")
     return -v if neg else v
 
 
@@ -237,7 +301,7 @@ def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[In
                 id=_get(r, c_id),
                 client=_get(r, c_client),
                 email=_get(r, c_email),
-                amount=parse_amount(_get(r, c_amt)),
+                amount=parse_amount(_get(r, c_amt), opts.decimal_comma),
                 currency=norm_currency(_get(r, c_cur), opts, Path(path).name),
                 issued=parse_date(_get(r, c_iss), order=opts.date_order),
                 due=parse_date(_get(r, c_due), order=opts.date_order),
@@ -301,7 +365,7 @@ def parse_wise(path: str | Path, opts: ParseOptions | None = None) -> list[Payme
         if not _get(r, c_amt):
             continue
         try:
-            amt = parse_amount(_get(r, c_amt))
+            amt = parse_amount(_get(r, c_amt))  # Wise statements always use a decimal point
             d = parse_date(_get(r, c_date), order=opts.date_order)
             cur = norm_currency(_get(r, c_cur), opts, Path(path).name)
         except ParseError as e:
@@ -338,7 +402,7 @@ def parse_payoneer(path: str | Path, opts: ParseOptions | None = None) -> list[P
             skipped += 1
             continue
         try:
-            amt = parse_amount(_get(r, c_amt))
+            amt = parse_amount(_get(r, c_amt), opts.decimal_comma)
             d = parse_date(_get(r, c_date), order=opts.date_order)
             cur = norm_currency(_get(r, c_cur), opts, Path(path).name)
         except ParseError as e:
@@ -390,7 +454,7 @@ def parse_generic(path: str | Path, mapping: dict[str, str], opts: ParseOptions 
         if not _get(r, c_amt):
             continue
         try:
-            amt = parse_amount(_get(r, c_amt))
+            amt = parse_amount(_get(r, c_amt), opts.decimal_comma)
             d = parse_date(_get(r, c_date), fmt, opts.date_order)
             cur = norm_currency(_get(r, c_cur), opts, Path(path).name) if c_cur and _get(r, c_cur) else default_cur
         except ParseError as e:

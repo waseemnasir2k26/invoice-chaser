@@ -46,30 +46,63 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _previous(out_dir: Path) -> dict[str, str]:
-    """{file name: sha256 or ""} from the drafts.json this tool wrote last time."""
+def _previous(out_dir: Path) -> dict[str, tuple[str, str]]:
+    """{file name: (sha256 or "", invoice id)} from the drafts.json this tool wrote last time."""
     try:
         data = json.loads((Path(out_dir) / "drafts.json").read_text(encoding="utf-8-sig"))
-        prev = {str(it.get("file", "")): str(it.get("sha256", "")) for it in data}
+        prev = {str(it.get("file", "")): (str(it.get("sha256", "")), str(it.get("invoice_id", ""))) for it in data}
     except (OSError, ValueError, AttributeError, TypeError):
         return {}
-    return {n: h for n, h in prev.items() if n.endswith(".eml") and Path(n).name == n}
+    return {n: v for n, v in prev.items() if n.endswith(".eml") and Path(n).name == n}
 
 
-def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = None) -> list[Path]:
-    """items: dicts with invoice_id, stage, to, from_name, from_email, subject, body."""
+def _load_kept(out_dir: Path) -> dict[str, str]:
+    """{file name: invoice id} of drafts you edited. Remembered across runs so the warning repeats."""
+    try:
+        data = json.loads((Path(out_dir) / "kept.json").read_text(encoding="utf-8-sig"))
+        return {str(k): str(v) for k, v in data.items() if str(k).endswith(".eml") and Path(str(k)).name == str(k)}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
+def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = None,
+                 settled_ids: set[str] | None = None) -> list[Path]:
+    """items: dicts with invoice_id, stage, to, from_name, from_email, subject, body.
+
+    settled_ids: lower-case ids of invoices that are now paid or void. An edited draft of such an
+    invoice is moved to drafts/stale/ (never deleted)."""
     warnings = warnings if warnings is not None else []
+    settled_ids = settled_ids or set()
     d = Path(out_dir) / "drafts"
     d.mkdir(parents=True, exist_ok=True)
-    edited: set[str] = set()
-    for name, digest in _previous(out_dir).items():
+    kept = _load_kept(out_dir)
+    for name, (digest, inv_id) in _previous(out_dir).items():
         old = d / name
         if not old.is_file():
             continue
         if digest and _sha(old) == digest:
             old.unlink()  # untouched since we wrote it
         else:
-            edited.add(name.lower())  # you changed it (or it predates hashes): leave it alone
+            kept[name] = inv_id  # you changed it (or it predates hashes): never delete it
+    edited: set[str] = set()
+    for name, inv_id in list(kept.items()):
+        f = d / name
+        if not f.is_file():
+            del kept[name]
+        elif inv_id.lower() in settled_ids:
+            stale = d / "stale"
+            stale.mkdir(exist_ok=True)
+            target, n = stale / name, 2
+            while target.exists():
+                target = stale / f"{Path(name).stem}-{n}.eml"
+                n += 1
+            f.replace(target)
+            del kept[name]
+            warnings.append(f"{name}: invoice {inv_id} is now paid, so your edited draft was moved to drafts/stale/ "
+                            f"(not deleted)")
+        else:
+            edited.add(name.lower())
+    reported: set[str] = set()
     paths = []
     used: set[str] = set()
     for it in items:
@@ -78,6 +111,7 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
         name, n = stem, 2
         if f"{stem}.eml".lower() in edited:
             name = f"{stem}.new"
+            reported.add(f"{stem}.eml".lower())
             warnings.append(f"{stem}.eml was edited by you and was kept; the new draft is {name}.eml")
         # ids like A/1 and A_1 must not overwrite each other, nor any file we did not write
         base = name
@@ -90,5 +124,9 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
         it["file"] = p.name
         it["sha256"] = hashlib.sha256(data).hexdigest()
         paths.append(p)
+    for name in sorted(kept):
+        if name.lower() not in reported:
+            warnings.append(f"{name} was edited by you and is kept (it is never deleted or overwritten)")
     (Path(out_dir) / "drafts.json").write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+    (Path(out_dir) / "kept.json").write_text(json.dumps(kept, indent=2, ensure_ascii=False), encoding="utf-8")
     return paths

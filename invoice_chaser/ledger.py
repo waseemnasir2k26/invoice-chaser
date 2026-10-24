@@ -80,6 +80,17 @@ def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "") -
     _write(path, data)
 
 
+def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
+    """Remove a mark-paid confirmation. Returns False if there was none."""
+    data = _read(path)
+    key = next((k for k in data["paid"] if str(k).strip().lower() == invoice_id.strip().lower()), None)
+    if key is None:
+        return False
+    del data["paid"][key]
+    _write(path, data)
+    return True
+
+
 def ci(mapping: dict) -> dict:
     """Case-insensitive view of a ledger section (ids are matched ignoring case and spaces)."""
     return {str(k).strip().lower(): v for k, v in mapping.items()}

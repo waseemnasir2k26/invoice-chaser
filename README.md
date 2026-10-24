@@ -6,6 +6,8 @@
 
 **The client is three weeks late, chasing feels awkward, so you don't, and the money sits.**
 
+Never auto-marks paid on a near match: 1,900 adversarial cases in the test suite. If it is not sure, it says why and waits for you.
+
 Point this at your invoice list and your Wise, Payoneer or bank export. It works out which invoices are paid, part-paid or overdue, then writes a reminder draft in the right tone for how late each one is. It never sends anything, and your data never leaves your machine: no account, no SaaS login.
 
 ![review.html from the demo: totals by currency, then needs review, overdue and partial invoices](docs/review.png)
@@ -77,23 +79,36 @@ Alex Rivera
 
 ## How matching decides
 
-A false "paid" is the worst failure this tool can have: the client is never chased. So the rules are strict about what counts as paid, and loose about what is worth a look.
+A false "paid" is the worst failure this tool can have: the client is never chased. So "paid" is a short table of conditions, not a score, and everything that merely looks plausible goes to **needs review**.
 
-**A payment is counted as paid only when** the invoice id is in the payment text (`INV-1001`, `inv 1001`, `INV#1001`; `INV-12` does not match `INV-120`), **or** the amount is exact **and** the payer is the client: every client word equals a payer word (whole words, not substrings) and the payer has no extra words other than legal suffixes (Ltd, LLC, Inc, GmbH, Pvt, Co...). So "Acme" is not "Acme Holdings", "Tom Lee" is not "Tom Leeds", "Alpha Studio" is not "Alpha Labs". false-paid tests: 22 cases (`tests/test_false_paid.py`), including the same amount from two clients, one transfer listed twice, and the same payment in two exports.
+**never auto-marks paid on a near match: 1,900 adversarial cases in the test suite** (`tests/test_adversarial.py`, `tests/test_false_paid.py`): near-miss ids and names, refunds, one payment naming two invoices, look-alike unicode, shared prices. They assert zero false paid, and a second group of controls asserts real references and real payers are still recognised.
 
-**Everything else that looks plausible is "needs review":** never marked paid, no reminder drafted, and `status.csv` / `review.html` say exactly why in a *why not paid* column (for example `payer 'Acme Holdings' is not exactly 'Acme'`). For each such row the page shows a copy-paste command, `invoice-chaser mark-paid INV-1006`, to confirm it once you have checked.
+A payment is counted as paid in exactly two ways.
 
-Also held for review rather than guessed:
+| | Path A: invoice id | Path B: the client itself |
+| --- | --- | --- |
+| Amount | within the fee/FX tolerance, in the invoice currency (or via a configured rate). Lower = **partial** (the rest is still chased). Higher = needs review | exact, same currency |
+| Who | exactly ONE invoice id in the text, as a whole token | payer words = client words (any order, same word counts), same legal-suffix kind: Acme Ltd = Acme Limited, but Acme Ltd != Acme Inc != Acme |
+| The text | the payment names no other invoice | the payment names no invoice at all |
+| Never | any refund / reversal / chargeback / credit note / return / cancel word in the text | the same |
 
-- a payment that fits several invoices and carries no invoice id;
-- a possible duplicate: the same transfer id twice in one export (the second row is dropped, with a warning), or the same amount, currency, payer and date (plus or minus one day) in two different exports (both rows flagged, neither can settle an invoice);
-- a payment dated before the invoice was issued, or far after it. These are never dropped silently: they are listed in `review.html` as "payments outside the invoice date window (check date format)", because a day/month mix-up is the usual cause. The invoice is held, not chased. Use `--date-format dmy|mdy|ymd` to fix the reading; if every date in a file could be read either way, you get a warning.
+What "whole token" means: `INV-1004`, `inv 1004`, `INV#1004`, `(INV-1004)`, `INV-1004.` all count. `INV-1004/2`, `INV-1004.5`, `INV-1004-2`, `INV-1004A`, `XINV-1004`, `INV-10040` and `INV 1004 2` do not. An id must look like an id: a letter and a digit (`INV-1004`, `A7`). Bare numbers (`5`, `2024`) never count, so "Deposit for 5 hours" cannot settle invoice 5; all-digit ids of 4+ digits need a prefix in `ref_prefixes` (for example `["INV"]`, then `INV 2026001` counts but `Payment 2026001` does not).
 
-Confidence (0 to 1) is for ordering and display: invoice id +0.60, exact amount +0.45 (lower +0.10, higher +0.05; a fee shortfall inside the tolerance counts only when the id or the name also points at the invoice), client-name similarity up to +0.30. Thresholds are in the config. Partial payments add up: 1,000 against a 2,500 invoice leaves 1,500 outstanding.
+Everything else is **needs review**: never marked paid, no reminder drafted, and `status.csv` / `review.html` say exactly why in a *why not paid* column (for example `payer 'Acme Holdings' is not exactly 'Acme'`, or `the payment text names several invoices (INV-1, INV-2)`). Each such row shows a copy-paste command, `invoice-chaser mark-paid INV-1006`, to confirm it once you have checked. Also held for review, never guessed:
+
+- a payment that fits several invoices and carries no invoice id, or names two invoices;
+- a possible duplicate: the same transfer id twice in one export (the second row is dropped, with a warning), or the same amount, currency, payer and date (plus or minus one day) in two exports (both rows flagged, neither can settle an invoice);
+- a payment dated before the invoice was issued, or far after it. Never dropped silently: listed in `review.html` as "payments outside the invoice date window (check date format)", because a day/month mix-up is the usual cause. The invoice is held, not chased. Use `--date-format dmy|mdy|ymd`; if every date in a file could be read either way, you get a warning.
+
+**Shared prices.** If you charge everyone 500 and a stranger's 500 arrives with no invoice id, that payment could belong to any of your clients. The tool does not guess and does not chase: the invoice goes to **needs review**, with the payer named in the reason. With more than 20 payments of the same amount and nothing identifying yours, it says so in one line instead of listing them. The cost is a few extra rows to confirm; the alternative is a reminder to a client who already paid, or an invoice wrongly closed.
+
+Confidence (0 to 1) is only for ordering and display. Partial payments add up: 1,000 against a 2,500 invoice leaves 1,500 outstanding.
 
 Currencies are read as ISO codes (`usd ` becomes `USD`, `€` EUR, `£` GBP). A bare `$` is not guessed: set `default_currency` in the config, otherwise you get a warning and those rows match nothing. Negative rows (refunds, fees, withdrawals) are ignored with a warning and listed in `review.html`; they are not netted against invoices.
 
-Speed: candidates come from indexes (exact amount, invoice-id token, payer equal to the client inside the date window), not an all-pairs scan, so run time grows roughly linearly. Measured cold, one run each, single thread, on a Windows 11 laptop (Intel 13th-gen-class CPU, 24 logical cores, Python 3.11.9) with synthetic data from `tests/perfdata.py` (500 distinct client names, so about 6 invoices and 30 payments per client, denser than most real exports): 60 invoices x 600 payments 0.03 s; 500 x 3,000 0.21 s; 1,000 x 5,000 0.39 s; 3,000 x 15,000 1.4 s; 6,000 x 30,000 2.2 s. Your numbers will differ.
+**Amounts are read strictly.** Sign or (parentheses), an optional currency symbol or code, then digits with one consistent thousands separator (comma, dot, space or apostrophe, always groups of three) and at most one decimal mark. `1,234.56`, `1.234,56`, `12,50`, `USD 1 234,50` are read exactly. Forms that could mean two things (`1,234` is 1234 or 1.234; `1.500` is 1500 or 1.5) and anything malformed (`1e400`, `1000 (2 of 3)`, `1,23,456`) skip that row with the reason, instead of guessing. Say which you mean with `decimal_comma` in the config (`true` for 1.234,56 style, `false` for 1,234.56) or `--decimal-comma`; it applies to the invoice, Payoneer and bank files, while Wise statements always use a decimal point.
+
+Speed: candidates come from indexes (invoice id named in the payment, payer equal to the client inside the date window, exact amount), capped per invoice (20), never an all-pairs scan, so run time grows roughly linearly. Measured cold, one run each, single thread, on a Windows 11 laptop (Intel 13th-gen-class CPU, 24 logical cores, Python 3.11.9) with synthetic data from `tests/perfdata.py` (500 distinct client names, so about 6 invoices and 30 payments per client, denser than most real exports): 60 invoices x 600 payments 0.03 s; 500 x 3,000 0.21 s; 1,000 x 5,000 0.39 s; 3,000 x 15,000 1.4 s; 6,000 x 30,000 2.2 s. The worst case, one price for every invoice (1,000 invoices x 5,000 payments, all 100.00), is checked by a test and finishes in well under 5 s. Your numbers will differ.
 
 ## The overdue ladder
 
@@ -113,7 +128,7 @@ Templates are plain files, `invoice_chaser/templates/<stage>.<tone>.md`: four st
 
 The text does not threaten legal action. Add that yourself where it is appropriate.
 
-## Track what you did: `mark-sent` and `mark-paid`
+## Track what you did: `mark-sent`, `mark-paid`, `unmark-paid`
 
 The tool never sends and never decides on a shaky match, so you tell it what happened:
 
@@ -121,12 +136,14 @@ The tool never sends and never decides on a shaky match, so you tell it what hap
 invoice-chaser mark-sent INV-1002            # stage taken from the last run's draft
 invoice-chaser mark-sent INV-1005 --stage firm --date 2026-10-20
 invoice-chaser mark-paid INV-1006 --note "checked bank"
+invoice-chaser unmark-paid INV-1006          # changed your mind
 ```
 
-Both write `out/sent.json` (override with `--ledger`). Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you pass `--force` (or fix the date).
+All write `out/sent.json` (override with `--ledger`). Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two).
 
 - **mark-sent:** a stage you already sent is never drafted again (the review page says when the next stage starts), and the next draft is worded as a follow-up with the date of your last reminder.
-- **mark-paid:** the next run shows the invoice as paid, with your note, and drafts nothing for it.
+- **mark-paid:** the next run shows the invoice as paid, with your note, and drafts nothing for it. A second mark-paid warns "already marked paid" and changes nothing.
+- **Stale drafts:** if you edited a draft and the invoice later becomes paid, your edited file is moved to `out/drafts/stale/` with a warning. It is never deleted. Edited drafts are remembered in `out/kept.json` so the warning repeats every run until you deal with the file.
 
 ## Your own data
 
@@ -150,7 +167,7 @@ Header matching ignores case, spaces and punctuation, and quoted multi-line fiel
 
 **Verify your own export.** The Wise column names are written from memory of Wise's statement CSV and were not checked against a fresh export; the Payoneer parser guesses by alias and its sample is synthetic. If your export uses different names, the generic `--bank` mapping works for any CSV and takes a minute to write. Please open an issue with the (redacted) header row if a real file fails.
 
-Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `auto_threshold`, `review_threshold` (0-1), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`. JSON files may carry a BOM. If `sender_email` is missing you get a warning and a banner in `review.html`.
+Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `auto_threshold`, `review_threshold` (0-1), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `ref_prefixes`, `decimal_comma`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`. JSON files may carry a BOM. If `sender_email` is missing you get a warning and a banner in `review.html`.
 
 Invoices with a missing or invalid email get no draft. They show as "missing email" or "invalid email" in `status.csv` and `review.html`, with a warning on stderr. CSV files may be UTF-8, UTF-8 with BOM, UTF-16 or Windows-1252.
 
@@ -164,14 +181,15 @@ Invoices with a missing or invalid email get no draft. They show as "missing ema
 
 ## Limits
 
-- **It suggests, you decide.** Matching is conservative on purpose, so expect some real payments in "needs review" (a client paying through a person's name, a fee shortfall without an invoice id). Check `review.html` before sending anything.
-- **A payment is only considered** if it has the exact invoice amount, contains the invoice id, or comes from a payer whose name equals the client's. A lower payment with no invoice id and a fuzzy-only payer name is not found; it shows up under "Payments not fully matched".
+- **It suggests, you decide.** Matching is conservative on purpose, so expect some real payments in "needs review": a client paying through a person's name, a fee shortfall without an invoice id, two same-priced invoices for one client paid without ids. Check `review.html` before sending anything.
+- **A payment is only considered** if it names the invoice id, comes from a payer whose name equals the client's, or has the exact invoice amount. A lower payment with no id and a different payer name is not found; it shows up under "Payments not fully matched".
+- **Names are compared strictly.** "Zoe" and "Zoë", "Acme" and "Acme Ltd", "Smith & Sons" and "Smith Sons" are different companies as far as the tool can tell. Word order is ignored ("Tom Lee" = "Lee Tom").
 - **No bank connection.** You download the statements; nothing logs in for you.
-- **Cross-currency needs your rate.** Without an entry like `"EUR/USD": "1.08"` in `fx_rates`, payments in another currency are not matched. The tolerance covers fees, not large exchange swings.
-- **Overpayments** are flagged for review unless the payer is the client.
+- **Cross-currency needs your rate.** Without an entry like `"EUR/USD": "1.08"` in `fx_rates`, payments in another currency are not matched (and only the invoice-id path accepts a converted amount).
+- **Overpayments** are flagged for review.
 - **Reminders are not legal notices.** The text is a starting point for politeness; it is not legal or financial advice, and late-payment rules differ by country and contract.
 - **Your edits are safe.** drafts.json stores a hash of every draft it wrote. A draft you edited is never deleted or overwritten: the new one is written beside it as `<name>.new.eml` with a warning. Files that are not ours are never touched.
-- A bad row in your CSV is skipped with a warning (listed in `review.html`); `--strict` aborts instead.
+- A bad row in your CSV is skipped with a warning and the reason (listed in `review.html`); `--strict` aborts instead.
 - Ambiguous dates like `03/04/2026` are read day-first unless you pass `--date-format`.
 - The LLM call and the n8n workflow were not exercised against live services.
 
