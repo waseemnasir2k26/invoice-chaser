@@ -13,3 +13,5 @@ dist/
 # real exports stay local; only the synthetic samples are tracked
 *.csv
 !examples/*.csv
+
+.critic/
