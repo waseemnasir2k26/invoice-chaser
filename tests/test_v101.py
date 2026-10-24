@@ -296,4 +296,4 @@ def test_matching_scales(capsys):
     dt = time.perf_counter() - t0
     print(f"3000 invoices x 15000 payments: {dt:.2f}s")
     assert dt < 10, f"too slow: {dt:.1f}s"           # measured about 4s; generous bound for slow machines
-    assert "paid" in {r.status for r in res}
+    assert "suggested_paid" in {r.status for r in res} and "paid" not in {r.status for r in res}

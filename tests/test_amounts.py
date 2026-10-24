@@ -85,4 +85,4 @@ def test_decimal_comma_flag_end_to_end(tmp_path):
     assert "ambiguous amount" in (tmp_path / "a" / "review.html").read_text(encoding="utf-8")
     assert main(base + ["--out", str(tmp_path / "b"), "--decimal-comma"]) == 0
     rows = list(csv.DictReader(open(tmp_path / "b" / "status.csv", encoding="utf-8")))
-    assert rows[0]["status"] == "paid" and rows[0]["amount"] == "1500"
+    assert rows[0]["status"] == "suggested_paid" and rows[0]["amount"] == "1500"

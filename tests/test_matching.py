@@ -22,13 +22,13 @@ def test_ref_hit_boundaries():
 
 def test_exact_amount_plus_ref_is_paid(cfg):
     (r,), _ = one([inv()], [pay(desc="ref INV-1")], cfg)
-    assert r.status == "paid" and r.confidence >= 0.9
+    assert r.status == "suggested_paid" and r.confidence >= 0.9
     assert "invoice id INV-1" in r.matches[0].reason and "exact amount" in r.matches[0].reason
 
 
 def test_exact_amount_and_name_is_paid(cfg):
     (r,), _ = one([inv()], [pay(payer="Acme Studio Ltd")], cfg)
-    assert r.status == "paid"
+    assert r.status == "suggested_paid"
 
 
 def test_amount_only_is_needs_review_never_paid(cfg):
@@ -46,38 +46,38 @@ def test_nothing_matches_overdue(cfg):
 
 def test_partial_with_reference(cfg):
     (r,), _ = one([inv(amount="2500")], [pay(amount="1000", desc="INV-1 deposit")], cfg)
-    assert r.status == "partial" and r.paid == Decimal("1000.00") and r.outstanding == Decimal("1500.00")
+    assert r.status == "partial_suggested" and r.paid == Decimal("1000.00") and r.outstanding == Decimal("1500.00")
 
 
 def test_two_partials_complete_the_invoice(cfg):
     ps = [pay("P1", amount="1000", desc="INV-1 part 1"), pay("P2", d=date(2026, 10, 10), amount="1500", desc="INV-1 final part")]
     (r,), _ = one([inv(amount="2500")], ps, cfg)
-    assert r.status == "paid" and len(r.matches) == 2
+    assert r.status == "suggested_paid" and len(r.matches) == 2
 
 
 def test_fee_shortfall_within_tolerance(cfg):
     (r,), _ = one([inv(amount="800")], [pay(amount="786", desc="INV-1")], cfg)
-    assert r.status == "paid"
+    assert r.status == "suggested_paid"
 
 
 def test_shortfall_beyond_tolerance_is_partial(cfg):
     (r,), _ = one([inv(amount="800")], [pay(amount="700", desc="INV-1")], cfg)
-    assert r.status == "partial" and r.outstanding == Decimal("100.00")
+    assert r.status == "partial_suggested" and r.outstanding == Decimal("100.00")
 
 
 def test_tolerance_is_configurable(cfg):
     cfg.fx_tolerance_pct = 0
     (r,), _ = one([inv(amount="800")], [pay(amount="786", desc="INV-1")], cfg)
-    assert r.status == "partial"
+    assert r.status == "partial_suggested"
 
 
 def test_cross_currency_needs_rate(cfg):
     p = pay(amount="920", cur="EUR", desc="INV-1")
     (r,), _ = one([inv()], [p], cfg)
-    assert r.status != "paid"
+    assert r.status != "suggested_paid"
     cfg.fx_rates = {"EUR/USD": "1.09"}  # 920 * 1.09 = 1002.80 -> within 2%
     (r,), _ = one([inv()], [p], cfg)
-    assert r.status == "paid" and "converted" in r.matches[0].reason
+    assert r.status == "suggested_paid" and "converted" in r.matches[0].reason
 
 
 def test_fuzzy_name(cfg):
@@ -85,7 +85,7 @@ def test_fuzzy_name(cfg):
     assert name_similarity("Acme Studio", "", "Received from Acme Studios") > 0.9
     assert name_similarity("Acme Studio", "Zed Corp") < 0.6
     (r,), _ = one([inv()], [pay(payer="Acme Studios")], cfg)
-    assert r.status in ("paid", "needs_review")  # strong fuzzy + exact amount
+    assert r.status in ("suggested_paid", "needs_review")  # strong fuzzy + exact amount
 
 
 def test_payment_outside_date_window_is_never_dropped_silently(cfg):
@@ -102,7 +102,7 @@ def test_payment_outside_date_window_is_never_dropped_silently(cfg):
 def test_one_payment_not_double_counted(cfg):
     a, b = inv("INV-1"), inv("INV-2")
     res, _ = one([a, b], [pay(desc="INV-1 INV-2")], cfg)
-    assert sorted(r.status for r in res) != ["paid", "paid"]
+    assert sorted(r.status for r in res) != ["suggested_paid", "suggested_paid"]
 
 
 def test_overpayment_leaves_remainder(cfg):

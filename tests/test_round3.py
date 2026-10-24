@@ -41,7 +41,7 @@ def test_shared_price_points_stay_fast_and_safe(n_inv, n_pay, prices, limit):
     results, _ = match_all(invs, dedupe_payments(pays, lambda m: None), TODAY, Config())
     dt = time.perf_counter() - t0
     assert dt < limit, f"{n_inv}x{n_pay} took {dt:.1f}s"
-    assert not [r for r in results if r.status == "paid"]                 # nobody is identified: nobody is paid
+    assert not [r for r in results if r.status in ("paid", "suggested_paid", "partial_suggested")]   # nobody is identified
     held = [r for r in results if r.status == "needs_review"]
     assert len(held) == len(results) and all(r.stage is None for r in results)   # and nobody is chased either
     assert "nothing identifies yours" in held[0].why_not_paid
@@ -66,10 +66,10 @@ def test_the_clients_own_payment_is_still_found_inside_a_crowd():
     pays = [pay(f"P{i}", d=date(2026, 9, 12), amount="500", payer=f"Person {i}", desc="transfer") for i in range(200)]
     pays.append(pay("MINE", d=date(2026, 9, 12), amount="500", payer="Acme Studio"))
     (r,), _ = match_all(invs, pays, TODAY, Config())
-    assert r.status == "paid" and r.matches[0].payment_id == "MINE"
+    assert r.status == "suggested_paid" and r.matches[0].payment_id == "MINE"
     pays[-1] = pay("MINE2", d=date(2026, 9, 12), amount="400", payer="Acme", desc="INV-1")
     (r,), _ = match_all(invs, pays[:-1] + [pays[-1]], TODAY, Config())
-    assert r.status == "partial" and r.matches[0].payment_id == "MINE2"
+    assert r.status == "partial_suggested" and r.matches[0].payment_id == "MINE2"
 
 
 def test_memory_and_recursion_errors_are_reported_cleanly(monkeypatch, tmp_path, capsys):

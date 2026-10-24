@@ -104,7 +104,7 @@ def test_early_payment_listed_and_invoice_held(tmp_path):
     inv = INV_HEAD + "INV-1,Acme Studio,a@b.co,1000,USD,2026-04-03,2026-05-03\n"
     wise = WISE_HEAD + '"W1","03/04/2026","1000.00","USD","Acme Studio INV-1","INV-1","Acme Studio"\n'
     code, rows = run(tmp_path, inv, wise)
-    assert rows["INV-1"]["status"] == "paid"                              # day-first default: fine
+    assert rows["INV-1"]["status"] == "suggested_paid"                    # day-first default: fine
     code, rows = run(tmp_path, inv, wise, ["--date-format", "mdy"])
     assert rows["INV-1"]["status"] == "needs_review" and rows["INV-1"]["draft_file"] == ""
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
@@ -130,7 +130,7 @@ def test_dollar_sign_with_default_currency_matches(tmp_path):
     assert rows["INV-1"]["status"] == "overdue"                           # "$" alone never silently becomes USD
     assert "ambiguous" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     code, rows = run(tmp_path, inv, wise, config={"default_currency": "USD", "sender_email": "me@x.co"})
-    assert rows["INV-1"]["status"] == "paid"
+    assert rows["INV-1"]["status"] == "suggested_paid"
 
 
 def test_default_currency_validated(tmp_path):
@@ -289,7 +289,7 @@ def test_mark_paid_flow_and_why_not_paid_and_html_command(tmp_path):
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(out / "status.csv", encoding="utf-8"))}
     r = rows["INV-1006"]
     assert r["status"] == "needs_review" and "is not exactly 'Lumen Labs'" in r["why_not_paid"]
-    assert rows["INV-1004"]["why_not_paid"] and rows["INV-1001"]["why_not_paid"] == ""
+    assert rows["INV-1004"]["why_not_paid"] and "waiting for your confirm" in rows["INV-1001"]["why_not_paid"]
     html = (out / "review.html").read_text(encoding="utf-8")
     assert "invoice-chaser mark-paid INV-1006" in html
     assert main(["mark-paid", "inv-1006", "--out", str(out), "--note", "checked bank", "--today", "2026-10-25"]) == 0
@@ -297,7 +297,7 @@ def test_mark_paid_flow_and_why_not_paid_and_html_command(tmp_path):
     main(["demo", "--out", str(out)])
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(out / "status.csv", encoding="utf-8"))}
     assert rows["INV-1006"]["status"] == "paid" and rows["INV-1006"]["outstanding"] == "0.00"
-    assert "marked paid by you" in rows["INV-1006"]["reason"]
+    assert "confirmed by you" in rows["INV-1006"]["reason"]
     assert not list((out / "drafts").glob("INV-1006*"))
 
 

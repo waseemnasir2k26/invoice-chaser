@@ -9,8 +9,10 @@ from pathlib import Path
 
 from .models import InvoiceResult, Payment
 
-STATUS_ORDER = [("needs_review", "Needs review"), ("overdue", "Overdue"), ("partial", "Partial"),
-                ("open", "Open, not yet due"), ("paid", "Paid"), ("void", "Void")]
+STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),
+                ("partial_suggested", "Part-payment suggested (waiting for your confirm)"),
+                ("needs_review", "Needs review"), ("overdue", "Overdue"), ("partial", "Partial (part-payment confirmed)"),
+                ("open", "Open, not yet due"), ("paid", "Paid (confirmed by you or marked paid in invoices.csv)"), ("void", "Void")]
 
 CSV_FIELDS = ["invoice_id", "client", "email", "currency", "amount", "paid", "outstanding", "due",
               "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "draft_status", "draft_file", "last_reminder"]
@@ -47,16 +49,20 @@ def totals_by_currency(results: list[InvoiceResult]) -> dict[str, dict[str, Deci
     for r in results:
         if r.status == "void":
             continue
-        row = t.setdefault(r.invoice.currency, {"invoiced": Decimal(0), "paid": Decimal(0),
+        row = t.setdefault(r.invoice.currency, {"invoiced": Decimal(0), "paid": Decimal(0), "suggested": Decimal(0),
                                                 "overdue": Decimal(0), "not_due": Decimal(0), "review": Decimal(0)})
         row["invoiced"] += r.invoice.amount
-        row["paid"] += r.paid
-        if r.status == "needs_review":
+        if r.status in ("suggested_paid", "partial_suggested"):
+            row["suggested"] += r.paid
             row["review"] += r.outstanding
-        elif r.status in ("overdue", "partial") and r.days_overdue > 0:
-            row["overdue"] += r.outstanding
-        elif r.status in ("open", "partial"):
-            row["not_due"] += r.outstanding
+        elif r.status == "needs_review":
+            row["review"] += r.outstanding
+        else:
+            row["paid"] += r.paid
+            if r.status in ("overdue", "partial") and r.days_overdue > 0:
+                row["overdue"] += r.outstanding
+            elif r.status in ("open", "partial"):
+                row["not_due"] += r.outstanding
     return t
 
 
@@ -79,12 +85,54 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;padding:1px 8px;border-radius:99px;border:1px solid var(--line);font-size:12px}
 .small{color:var(--mut);font-size:12px}
 .cmd{user-select:all;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:12px}
+.confirm{border:1px solid #15803d;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px;background:var(--card)}
 .warn{background:var(--card);border:1px solid #b45309;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px}
 """
 
 
+def _out_arg(out_hint: str) -> str:
+    return f' --out "{out_hint}"' if (" " in out_hint) else (f" --out {out_hint}" if out_hint != "out" else "")
+
+
+def _cmd(text: str) -> str:
+    return f"<code class=cmd>{e(text)}</code>"
+
+
+def _confirm_section(suggestions: list[dict], out_hint: str) -> str:
+    """The top of the page: one copy-paste command per suggestion. Nothing is paid until you run one."""
+    strong = [s for s in suggestions if s["kind"] in ("paid", "partial")]
+    if not strong:
+        return ""
+    out = _out_arg(out_hint)
+    rows = []
+    for s in strong:
+        pays = ""
+        for p in s["payments"]:
+            amt = f"{Decimal(p['amount']):,.2f}"
+            pays += (f"<div class=small><strong>{e(p['id'])}</strong> ({e(p['source'])}) {e(p['date'])}: {e(amt)} {e(p['currency'])}"
+                     f" from {e(p['payer'] or '(no payer name)')}<br>{e(p['description'])}</div>")
+        iid = shlex_quote(s["invoice_id"])
+        cmds = f"<div>{_cmd('invoice-chaser confirm ' + iid + out)}</div>"
+        for p in s["payments"]:
+            cmds += f"<div class=small>not this one: {_cmd('invoice-chaser reject ' + iid + ' ' + shlex_quote(p['id']) + out)}</div>"
+        label = "paid in full" if s["kind"] == "paid" else "part-payment"
+        total = f"{Decimal(s['amount']):,.2f}"
+        conf = f"{s['confidence']:.2f}"
+        rows.append(f"<tr><td>{e(s['invoice_id'])}</td><td>{e(s['client'])}</td>"
+                    f"<td class=n>{e(total)} {e(s['currency'])}</td><td>{e(label)}</td><td>{pays}</td>"
+                    f"<td class=n>{e(conf)}</td><td class=small>{e(s['reason'])}</td><td>{cmds}</td></tr>")
+    bulk = ""
+    if any(s["kind"] == "paid" for s in strong):
+        bulk = (f"<p>Reviewed them all? {_cmd('invoice-chaser confirm --all-strong' + out)} prints the list and asks "
+                f"y/N before it records anything.</p>")
+    return ("<div class=confirm><strong>Confirm these</strong> <span class=small>The tool found these payments but never marks an "
+            "invoice paid by itself. No reminder is drafted for them until you confirm or reject.</span></div>"
+            "<div class=wrap><table><tr><th>Invoice</th><th>Client</th><th>Amount</th><th>Suggestion</th><th>Payment found</th>"
+            "<th>Conf.</th><th>Why</th><th>Your decision</th></tr>" + "".join(rows) + "</table></div>" + bulk)
+
+
 def _markpaid(invoice_id: str, out_hint: str) -> str:
-    out = f' --out "{out_hint}"' if (" " in out_hint) else (f" --out {out_hint}" if out_hint != "out" else "")
+    out = _out_arg(out_hint)
     return ("<div>If you checked and it is paid, run: "
             f"<code class=cmd>invoice-chaser mark-paid {e(shlex_quote(invoice_id))}{e(out)}</code></div>")
 
@@ -105,28 +153,30 @@ def _rows(results: list[InvoiceResult], drafts: dict[str, str], out_hint: str = 
             f"<td>{e(r.stage or '')}{'<div class=small>' + e(drafts[i.id]) + '</div>' if i.id in drafts else ''}"
             f"{'<div class=small>' + e(r.draft_status) + '</div>' if r.draft_status and i.id not in drafts else ''}</td>"
             f"<td class=n>{e(f'{r.confidence:.2f}')}</td><td class=small>{e(_reason(r))}"
-            f"{'<div><strong>Why not paid:</strong> ' + e(r.why_not_paid) + '</div>' if r.why_not_paid and r.status != 'open' else ''}"
+            f"{'<div><strong>Why not paid:</strong> ' + e(r.why_not_paid) + '</div>' if r.why_not_paid and r.status not in ('open', 'suggested_paid', 'partial_suggested') else ''}"
             f"{_markpaid(i.id, out_hint) if r.status == 'needs_review' else ''}</td></tr>")
     return "".join(out)
 
 
 def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Decimal]],
                 drafts: dict[str, str], today, warnings: list[str] | None = None,
-                early=None, ignored: list[Payment] | None = None, out_hint: str = "out") -> str:
+                early=None, ignored: list[Payment] | None = None, out_hint: str = "out",
+                suggestions: list[dict] | None = None) -> str:
     parts = [f"<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"<meta name=viewport content='width=device-width,initial-scale=1'>"
              f"<title>Invoice review {e(today.isoformat())}</title><style>{CSS}</style></head><body><main>"
              f"<h1>Invoice review</h1><p class=sub>As of {e(today.isoformat())}. Generated locally. "
              f"Nothing was sent: drafts are files for you to read, edit and send yourself.</p>"]
+    parts.append(_confirm_section(suggestions or [], out_hint))
     if warnings:
         parts.append("<div class=warn><strong>Check before using these drafts</strong><ul>"
                      + "".join(f"<li>{e(w)}</li>" for w in warnings) + "</ul></div>")
     tot = totals_by_currency(results)
-    parts.append("<h2>Totals by currency</h2><div class=wrap><table><tr><th>Currency</th><th>Invoiced</th><th>Paid</th>"
-                 "<th>Overdue outstanding</th><th>Not yet due</th><th>Needs review</th></tr>")
+    parts.append("<h2>Totals by currency</h2><div class=wrap><table><tr><th>Currency</th><th>Invoiced</th><th>Confirmed paid</th>"
+                 "<th>Suggested paid</th><th>Overdue outstanding</th><th>Not yet due</th><th>Needs review / waiting</th></tr>")
     for cur, t in sorted(tot.items()):
         parts.append(f"<tr><td>{e(cur)}</td>" + "".join(
-            f"<td class=n>{e(f'{t[k]:,.2f}')}</td>" for k in ("invoiced", "paid", "overdue", "not_due", "review")) + "</tr>")
+            f"<td class=n>{e(f'{t[k]:,.2f}')}</td>" for k in ("invoiced", "paid", "suggested", "overdue", "not_due", "review")) + "</tr>")
     parts.append("</table></div>")
     head = ("<tr><th>Invoice</th><th>Client</th><th>Amount</th><th>Paid</th><th>Outstanding</th><th>Due</th>"
             "<th>Days overdue</th><th>Stage / draft</th><th>Conf.</th><th>Why</th></tr>")

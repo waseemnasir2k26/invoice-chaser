@@ -329,7 +329,7 @@ _OK_STATUS = {"", "completed", "complete", "processed", "approved", "paid", "suc
 
 
 def _join(*parts: str) -> str:
-    return " ".join(p.strip() for p in parts if p and p.strip())
+    return " | ".join(p.strip() for p in parts if p and p.strip())  # a hard boundary: fields never glue into one id
 
 
 def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skipped_status: int = 0) -> list[Payment]:

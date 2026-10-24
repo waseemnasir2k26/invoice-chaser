@@ -40,13 +40,19 @@ class Match:
     confidence: float
     reason: str
     allocated: Decimal = Decimal(0)
-    blocker: str = ""  # why this was not counted as paid
+    blocker: str = ""  # why this was not counted as strong evidence
+    payer: str = ""
+    source: str = ""
+    currency: str = ""
+    amount: Decimal = Decimal(0)  # the payment row as exported (before conversion)
 
 
 @dataclass
 class InvoiceResult:
     invoice: Invoice
-    status: str  # paid | partial | overdue | open | needs_review | void
+    # suggested_paid | partial_suggested | needs_review | overdue | open come from the engine;
+    # paid | partial | void only come from invoices.csv or from your own confirm / mark-paid.
+    status: str
     paid: Decimal
     outstanding: Decimal
     days_overdue: int

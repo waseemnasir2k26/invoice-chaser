@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 - 2026-10-25
+
+**Product change: the tool no longer marks anything paid by itself.** Four rounds of review found a new false-paid class in every round (non-English refund words, "payment failed", an earlier settled invoice, ids glued across fields, future dates, short ids like B2, ids inside e-mail addresses, a confirmation that outlived a changed invoice). Piling on rules cannot make an automatic "paid" safe on messy bank text, so the decision is split.
+
+- New statuses: `suggested-paid` and `partial-suggested` (strong evidence, shown with the reason, the confidence and the exact payment row), `needs-review`, `overdue`, `open`. `paid` appears only if `invoices.csv` says so or you ran `confirm` / `mark-paid`.
+- New commands: `confirm INV` (and `confirm --all-strong`, which prints the list and asks y/N unless `--yes`), `reject INV PAYMENT` (never suggested again). `mark-paid` and `unmark-paid` stay.
+- No reminder is ever drafted for an invoice that has a suggested payment: it waits for your confirm or reject. Reminders only for `overdue`, and for the remainder of a part-payment you confirmed.
+- The ledger stores a snapshot (client, amount, currency, due) with every confirmation. If `invoices.csv` later differs, the invoice goes back to needs-review with a warning ("invoice changed since you confirmed it").
+- `review.html` opens with a "Confirm these" section: one copy-paste command per suggestion. New `out/suggestions.json`.
+- The evidence table still ranks suggestions, and the classes found in review are fixed: refund, failure and non-receipt wording in many languages (list generated into the README from the code); description and payer searched separately, never glued; future-dated payments held; ids need 2+ letters and 2+ digits or a configured prefix (`ref_prefixes`, default INV and INVOICE); ids inside e-mail addresses and URLs ignored; an id-like token missing from the invoice list ("INV-9999") holds the payment; settled invoices stay in the ambiguity check for the same client and price; two clients with the same name (different e-mail addresses) are never matched by name.
+- Candidates are capped everywhere: a payment naming more than 3 known invoices is never paired (those invoices go to review, "names more than 3 invoices at once"); an invoice named by more than 20 payments, or sharing its exact amount with more than 20, goes to review in bulk. 500 invoices x 2,000 payments that all name every invoice finish in about 1.5 s.
+- Tests: a mutation-backed test per class (the scenario is refused by the real rule and accepted when only that rule is switched off), a property test asserting the engine never outputs `paid`, and 3,360 executed adversarial scenarios (counted by running them, not by formula; the README states the number and a test keeps it in sync).
+
 ## 1.0.1 - 2026-10-25
 
 Fixes from the first review round.

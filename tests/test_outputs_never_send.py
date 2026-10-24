@@ -20,14 +20,17 @@ def test_demo_end_to_end(tmp_path):
     assert main(["demo", "--out", str(tmp_path)]) == 0
     rows = list(csv.DictReader(open(tmp_path / "status.csv", encoding="utf-8")))
     by = {r["invoice_id"]: r for r in rows}
-    assert by["INV-1001"]["status"] == "paid"
-    assert by["INV-1002"]["status"] == "partial" and by["INV-1002"]["outstanding"] == "1500.00"
-    assert by["INV-1003"]["status"] == "paid"            # Payoneer, fee shortfall
+    assert by["INV-1001"]["status"] == "suggested_paid"       # the tool never says "paid" by itself
+    assert by["INV-1002"]["status"] == "partial_suggested" and by["INV-1002"]["outstanding"] == "1500.00"
+    assert by["INV-1002"]["draft_file"] == "" and "waiting for your confirm" in by["INV-1002"]["draft_status"]
+    assert by["INV-1003"]["status"] == "suggested_paid"       # Payoneer, fee shortfall
+    assert by["INV-1009"]["status"] == "paid"                 # invoices.csv itself says paid
+    assert not [r for r in rows if r["status"] == "paid" and r["invoice_id"] != "INV-1009"]
     assert by["INV-1004"]["stage"] == "nudge" and by["INV-1005"]["stage"] == "escalation"
     assert by["INV-1006"]["status"] == "needs_review" and by["INV-1006"]["draft_file"] == ""
     assert by["INV-1008"]["stage"] == "firm" and by["INV-1007"]["status"] == "open"
     assert sorted(p.name for p in (tmp_path / "drafts").glob("*.eml")) == [
-        "INV-1002-final.eml", "INV-1004-nudge.eml", "INV-1005-escalation.eml", "INV-1008-firm.eml"]
+        "INV-1004-nudge.eml", "INV-1005-escalation.eml", "INV-1008-firm.eml"]     # none for suggested or review rows
     msg = message_from_bytes((tmp_path / "drafts" / "INV-1004-nudge.eml").read_bytes())
     assert msg["To"] == "anna@kestrel.example" and "INV-1004" in msg["Subject"] and msg["X-Unsent"] == "1"
     assert (tmp_path / "review.html").read_text(encoding="utf-8").count("<html") == 1
@@ -35,7 +38,8 @@ def test_demo_end_to_end(tmp_path):
 
 def test_tone_flag_changes_text(tmp_path):
     main(["demo", "--out", str(tmp_path), "--tone", "firm"])
-    assert "FINAL NOTICE" in (tmp_path / "drafts" / "INV-1002-final.eml").read_text(encoding="utf-8")
+    msg = message_from_bytes((tmp_path / "drafts" / "INV-1005-escalation.eml").read_bytes())
+    assert msg["Subject"] == "Escalation: invoice INV-1005 - 40 days overdue"
 
 
 def test_html_escapes_everything():
@@ -52,7 +56,8 @@ def test_html_is_self_contained(tmp_path):
     main(["demo", "--out", str(tmp_path)])
     html = (tmp_path / "review.html").read_text(encoding="utf-8")
     assert not re.search(r"(src|href)=[\"']?https?://", html) and "<script" not in html
-    for label in ("Needs review", "Overdue", "Partial", "Paid", "Totals by currency"):
+    for label in ("Confirm these", "Suggested paid", "Needs review", "Overdue", "Paid", "Totals by currency",
+                  "invoice-chaser confirm INV-1001", "invoice-chaser confirm --all-strong"):
         assert label in html
 
 

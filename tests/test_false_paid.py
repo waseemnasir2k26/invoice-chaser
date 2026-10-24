@@ -103,13 +103,14 @@ def test_false_paid(name):
     case = CASES[name]
     payments = dedupe_payments([p for p in case["payments"]], lambda m: None)
     results, _ = match_all(case["invoices"], payments, TODAY, Config())
-    paid = {r.invoice.id for r in results if r.status == "paid"}
+    paid = {r.invoice.id for r in results if r.status == "suggested_paid"}
     assert paid == case["paid"], (name, {r.invoice.id: r.status for r in results})
+    assert not [r for r in results if r.status == "paid"], "the engine never sets paid"
     for r in results:
-        if r.status == "paid":
+        if r.status == "suggested_paid":
             assert r.matches and all(m.blocker == "" for m in r.matches)
         else:
-            assert r.paid == Decimal("0.00") or r.status == "partial"
+            assert r.paid == Decimal("0.00") or r.status == "partial_suggested"
 
 
 def test_strong_name_rule():

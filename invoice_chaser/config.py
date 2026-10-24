@@ -23,7 +23,7 @@ class Config:
     previous_reminders: bool = False  # True: wording may say "following my earlier reminder"
     pause_work_on_final: bool = False  # True: final/escalation drafts include the pause-work sentence
     reply_within_days: int = 7  # deadline wording in final/escalation drafts
-    ref_prefixes: list[str] = field(default_factory=list)  # e.g. ["INV"]: lets all-digit invoice ids (2026001) match "INV 2026001"
+    ref_prefixes: list[str] = field(default_factory=lambda: ["INV", "INVOICE"])  # ids that start with one of these (INV-1) count as ids; all-digit ids need one too
     decimal_comma: bool | None = None  # None: read only unambiguous amounts; True: 1.234,56; False: 1,234.56
     default_currency: str = ""  # what a bare "$" in your files means, e.g. "USD"
 

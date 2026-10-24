@@ -37,12 +37,25 @@ def build_samples() -> dict[str, str]:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["demo", "--out", "out"]) == 0
-            msg = message_from_bytes((Path(tmp) / "out" / "drafts" / "INV-1002-final.eml").read_bytes(), policy=policy.default)
+            msg = message_from_bytes((Path(tmp) / "out" / "drafts" / "INV-1005-escalation.eml").read_bytes(), policy=policy.default)
             head = "".join(f"{k}: {msg[k]}\n" for k in ("To", "From", "Subject", "X-Unsent"))
             eml = head + "\n" + msg.get_content()
         finally:
             os.chdir(cwd)
-    return {"demo-output": buf.getvalue().replace("\\", "/"), "eml": eml}
+    from invoice_chaser import decision
+
+    nl = chr(10)
+    words = nl.join([
+        "Refund, reversal, return, cancellation (word stems, matched at the start of a word, any case):",
+        "  " + ", ".join(decision.REFUND_STEMS),
+        "Failure and non-receipt (word stems):",
+        "  " + ", ".join(decision.FAILURE_STEMS),
+        "Scripts written without spaces (found anywhere in the text):",
+        "  " + ", ".join(decision.CJK_SUBSTRINGS),
+        "Phrases:",
+        "  credit note, credit memo, not received, not yet received",
+    ])
+    return {"demo-output": buf.getvalue().replace("\\", "/"), "eml": eml, "negative-words": words}
 
 
 def apply(text: str, samples: dict[str, str]) -> str:
