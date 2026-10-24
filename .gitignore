@@ -15,3 +15,6 @@ dist/
 !examples/*.csv
 
 .critic/
+
+# demo data ships inside the package
+!invoice_chaser/demo_data/*.csv

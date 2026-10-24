@@ -4,7 +4,7 @@ Hi {{first_name}},
 
 {{personal_line}}
 
-Invoice {{invoice_id}} for {{outstanding}} was due on {{due_date}} and is {{days_overdue}} days overdue. I sent an earlier reminder and have not had a reply or payment.
+Invoice {{invoice_id}} for {{outstanding}} was due on {{due_date}} and is {{days_overdue}} days overdue.{{#earlier}} This follows {{earlier_reminder}}.{{/earlier}}
 
 {{payment_details}}
 

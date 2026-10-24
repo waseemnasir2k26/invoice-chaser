@@ -7,6 +7,7 @@ against alias lists, so "Transaction Date", "transaction_date" and
 from __future__ import annotations
 
 import csv
+import io
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -88,7 +89,7 @@ def _open_rows(path: str | Path):
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
     except csv.Error:
         dialect = csv.excel
-    reader = csv.DictReader(text.splitlines(), dialect=dialect)
+    reader = csv.DictReader(io.StringIO(text, newline=""), dialect=dialect)
     return reader.fieldnames or [], list(reader)
 
 
@@ -128,6 +129,7 @@ def read_invoices(path: str | Path) -> list[Invoice]:
     c_email = _pick(cm, ["email", "clientemail", "contactemail"])
     c_stat = _pick(cm, ["status"])
     c_contact = _pick(cm, ["contact", "contactname", "firstname"])
+    c_last = _pick(cm, ["lastreminder", "lastreminderdate", "lastremindersent", "reminded"])
     out, seen = [], set()
     for n, r in enumerate(rows, start=2):
         if not any((v or "").strip() for v in r.values() if isinstance(v, str)):
@@ -143,6 +145,7 @@ def read_invoices(path: str | Path) -> list[Invoice]:
                 due=parse_date(_get(r, c_due)),
                 status=_get(r, c_stat).lower(),
                 contact=_get(r, c_contact),
+                last_reminder=parse_date(_get(r, c_last)) if _get(r, c_last) else None,
             )
         except ParseError as e:
             raise ParseError(f"{path} row {n}: {e}") from e

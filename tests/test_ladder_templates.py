@@ -50,8 +50,8 @@ def test_all_shipped_templates_render(stage, tone):
     assert "Hi Sam," in body and body.rstrip().endswith("Alex")
 
 
-def test_final_stage_has_pause_work_notice():
-    _, body = render(load_template("final", "neutral"), variables_for(_res(), "Alex", ""))
+def test_final_stage_has_pause_work_notice_when_enabled():
+    _, body = render(load_template("final", "neutral"), variables_for(_res(), "Alex", ""), frozenset({"pause"}))
     assert "pause work" in body
 
 

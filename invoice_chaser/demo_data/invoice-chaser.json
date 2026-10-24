@@ -1,0 +1,13 @@
+{
+  "sender_name": "Alex Rivera",
+  "sender_email": "alex@example.com",
+  "payment_details": "Payment details are on the invoice. Wise or Payoneer both work.",
+  "tone": "friendly",
+  "fx_tolerance_pct": 2.0,
+  "date_window_days": 120,
+  "stage_days": [1, 7, 14, 30],
+  "fx_rates": {},
+  "previous_reminders": false,
+  "pause_work_on_final": true,
+  "reply_within_days": 7
+}

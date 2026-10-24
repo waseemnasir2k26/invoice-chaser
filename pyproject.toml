@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "invoice-chaser"
-version = "1.0.0"
+version = "1.0.1"
 description = "Match incoming payments to open invoices and draft polite, escalating reminders. Local, file-based, never sends."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,7 +22,7 @@ invoice-chaser = "invoice_chaser.cli:main"
 packages = ["invoice_chaser"]
 
 [tool.setuptools.package-data]
-invoice_chaser = ["templates/*.md"]
+invoice_chaser = ["templates/*.md", "demo_data/*.csv", "demo_data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

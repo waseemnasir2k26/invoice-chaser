@@ -16,6 +16,7 @@ class Invoice:
     due: date
     status: str = ""
     contact: str = ""
+    last_reminder: date | None = None
 
 
 @dataclass
@@ -52,3 +53,5 @@ class InvoiceResult:
     matches: list[Match] = field(default_factory=list)
     suggestions: list[Match] = field(default_factory=list)
     note: str = ""
+    draft_status: str = ""
+    last_reminder: date | None = None

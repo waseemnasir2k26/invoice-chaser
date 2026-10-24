@@ -6,5 +6,8 @@
   "fx_tolerance_pct": 2.0,
   "date_window_days": 120,
   "stage_days": [1, 7, 14, 30],
-  "fx_rates": {}
+  "fx_rates": {},
+  "previous_reminders": false,
+  "pause_work_on_final": true,
+  "reply_within_days": 7
 }

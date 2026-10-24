@@ -1,0 +1,9 @@
+{
+  "date": "Booking Date",
+  "date_format": "%d/%m/%Y",
+  "credit": "Credit",
+  "currency": "Ccy",
+  "description": "Narrative",
+  "payer": "Counterparty",
+  "id": "Ref"
+}
