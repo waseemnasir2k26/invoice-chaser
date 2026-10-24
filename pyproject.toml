@@ -21,5 +21,8 @@ invoice-chaser = "invoice_chaser.cli:main"
 [tool.setuptools]
 packages = ["invoice_chaser"]
 
+[tool.setuptools.package-data]
+invoice_chaser = ["templates/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

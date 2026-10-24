@@ -33,7 +33,7 @@ invoice-chaser run \
   --tone neutral --out out
 ```
 
-Requires Python 3.10+. No dependencies. Use `pip install -e .` (a clone), not a plain install: the reminder templates live in the repo's `templates/` folder, or pass `--templates` to use your own.
+Requires Python 3.10+. No dependencies. Install from a clone with `pip install .` (or `-e .` to hack on it). The reminder templates ship inside the package; pass `--templates <dir>` to use your own.
 
 ## What it does
 
@@ -64,7 +64,7 @@ Partial payments are tracked: a 1,000 payment against a 2,500 invoice leaves 1,5
 | 14           | `final`      | Final reminder plus notice that work will be paused               |
 | 30           | `escalation` | Asks for payment or a written plan, says you'll review next steps |
 
-Templates are plain files, `templates/<stage>.<tone>.md`, with three tones (`friendly`, `neutral`, `firm`) per stage. Edit them freely. Variables: `{{first_name}} {{client}} {{invoice_id}} {{amount}} {{outstanding}} {{currency}} {{due_date}} {{days_overdue}} {{sender_name}} {{payment_details}} {{personal_line}}`. A misspelled variable stops the run instead of shipping literal braces. The escalation text does not threaten legal action; add that yourself if it is appropriate where you are.
+Templates are plain files, `invoice_chaser/templates/<stage>.<tone>.md`, with three tones (`friendly`, `neutral`, `firm`) per stage. Edit them freely. Variables: `{{first_name}} {{client}} {{invoice_id}} {{amount}} {{outstanding}} {{currency}} {{due_date}} {{days_overdue}} {{sender_name}} {{payment_details}} {{personal_line}}`. A misspelled variable stops the run instead of shipping literal braces. The escalation text does not threaten legal action; add that yourself if it is appropriate where you are.
 
 ### Optional: one personalised line
 
@@ -137,7 +137,7 @@ Header matching ignores case, spaces and punctuation. If a required column is mi
 
 ```
 invoice_chaser/   parsers, matching, ladder, templates, llm, drafts, report, cli
-templates/        <stage>.<tone>.md (12 files)
+invoice_chaser/templates/  <stage>.<tone>.md (12 files)
 examples/         synthetic invoices, Wise / Payoneer / bank samples, config, n8n workflow
 tests/            pytest suite
 ```

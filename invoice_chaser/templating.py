@@ -22,7 +22,7 @@ class TemplateError(ValueError):
 
 
 def default_templates_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "templates"
+    return Path(__file__).resolve().parent / "templates"
 
 
 def load_template(stage: str, tone: str, templates_dir: Path | None = None) -> str:
