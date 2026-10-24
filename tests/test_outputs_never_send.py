@@ -7,9 +7,8 @@ from decimal import Decimal
 from email import message_from_bytes
 from pathlib import Path
 
-import pytest
-
 from conftest import inv
+
 from invoice_chaser.cli import main
 from invoice_chaser.models import InvoiceResult, Payment
 from invoice_chaser.report import render_html, write_status_csv

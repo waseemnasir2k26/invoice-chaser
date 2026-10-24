@@ -56,7 +56,7 @@ def name_similarity(client: str, *texts: str) -> float:
         best = max(best, SequenceMatcher(None, c, t).ratio())
         tw = t.split()
         for size in {len(cw), max(1, len(cw) - 1), len(cw) + 1}:
-            for i in range(0, max(1, len(tw) - size + 1)):
+            for i in range(max(1, len(tw) - size + 1)):
                 window = " ".join(tw[i:i + size])
                 best = max(best, SequenceMatcher(None, c, window).ratio())
     return best

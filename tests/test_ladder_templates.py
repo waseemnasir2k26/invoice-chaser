@@ -2,12 +2,17 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-
 from conftest import inv
+
 from invoice_chaser.ladder import days_overdue, stage_for
 from invoice_chaser.llm import personal_line
 from invoice_chaser.models import InvoiceResult
-from invoice_chaser.templating import TemplateError, load_template, render, variables_for
+from invoice_chaser.templating import (
+    TemplateError,
+    load_template,
+    render,
+    variables_for,
+)
 
 DUE = date(2026, 10, 1)
 

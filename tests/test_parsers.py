@@ -3,8 +3,15 @@ from decimal import Decimal
 
 import pytest
 
-from invoice_chaser.parsers import (ParseError, parse_amount, parse_date, parse_generic, parse_payoneer,
-                                    parse_wise, read_invoices)
+from invoice_chaser.parsers import (
+    ParseError,
+    parse_amount,
+    parse_date,
+    parse_generic,
+    parse_payoneer,
+    parse_wise,
+    read_invoices,
+)
 
 
 def test_wise_sample(examples):

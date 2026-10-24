@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from conftest import inv, pay
+
 from invoice_chaser.matching import match_all, name_similarity, ref_hit
 
 TODAY = date(2026, 10, 25)
@@ -104,10 +105,10 @@ def test_one_payment_not_double_counted(cfg):
 def test_overpayment_leaves_remainder(cfg):
     # id alone + a higher amount is only 0.65: flagged, not auto-paid
     (r,), left = one([inv()], [pay(amount="1300", desc="INV-1")], cfg)
-    assert r.status == "needs_review" and left[0][1] == Decimal("1300")
+    assert r.status == "needs_review" and left[0][1] == Decimal(1300)
     # id + client name: confident, and the surplus is reported as unallocated
     (r,), left = one([inv()], [pay(amount="1300", desc="INV-1", payer="Acme Studio Ltd")], cfg)
-    assert r.status == "paid" and left[0][1] == Decimal("300")
+    assert r.status == "paid" and left[0][1] == Decimal(300)
 
 
 def test_manual_status_respected(cfg):

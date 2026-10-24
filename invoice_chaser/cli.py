@@ -11,7 +11,13 @@ from .config import load_config
 from .drafts import write_drafts
 from .llm import personal_line
 from .matching import match_all
-from .parsers import ParseError, parse_generic, parse_payoneer, parse_wise, read_invoices
+from .parsers import (
+    ParseError,
+    parse_generic,
+    parse_payoneer,
+    parse_wise,
+    read_invoices,
+)
 from .report import render_html, write_status_csv
 from .templating import TemplateError, load_template, render, variables_for
 
