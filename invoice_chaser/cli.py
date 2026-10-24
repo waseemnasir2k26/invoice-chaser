@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import hashlib
 import json
 import os
 import sys
+import tempfile
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -19,10 +21,12 @@ from .ledger import (
     ci,
     highest_sent,
     last_sent_date,
+    load_dropped,
     load_ledger,
     load_paid,
     load_received,
     load_rejected,
+    migrate_row_keys,
     record_paid,
     record_received,
     record_rejected,
@@ -57,6 +61,29 @@ def _pkey(p) -> str:
     return f"{p.source}:{p.id}"
 
 
+def _file_hash(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _out_hint(out) -> str:
+    """The --out value shown in copy-paste commands: relative to where you are now, never an absolute path."""
+    out = Path(out)
+    if not out.is_absolute():
+        return str(out)
+    try:
+        rel = os.path.relpath(out)
+    except ValueError:  # another drive on Windows
+        return out.name
+    return rel if rel != "." else "."
+
+
+def _ledger_state(paid, received, rejected, invoice_id: str) -> str:
+    """A fingerprint of everything the ledger says about one invoice: a suggestion is only valid while it is unchanged."""
+    k = invoice_id.strip().lower()
+    state = {"paid": paid.get(k), "received": received.get(k), "rejected": sorted(rejected.get(k, []))}
+    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+
+
 def run(args) -> int:
     cfg = load_config(args.config)
     if args.tone:
@@ -88,12 +115,17 @@ def run(args) -> int:
 
     out = Path(args.out)
     lpath = _ledger_path(args)
+    migrate_row_keys(lpath)  # drops ledger keys that were row numbers (not stable across exports)
+    dropped = load_dropped(lpath)
     ledger = ci(load_ledger(lpath))
     paid_marks = ci(load_paid(lpath))
     received_marks = ci(load_received(lpath))
     rejected = ci(load_rejected(lpath))
     warnings: list[str] = list(opts.warnings)
     notes: list[str] = []
+    for inv_id, keys in dropped.items():
+        warnings.append(f"{inv_id}: ledger reference(s) {', '.join(keys)} were dropped because row-numbered payment ids are not stable "
+                        f"across exports; check this invoice (a rejected payment may be suggested again)")
 
     # ---- what you already decided: confirmed payments are consumed, rejected ones never come back ----
     consumed = {k for m in list(paid_marks.values()) + list(received_marks.values()) for k in m.get("payments", [])}
@@ -120,8 +152,9 @@ def run(args) -> int:
         changes = snapshot_diff(entry.get("snapshot", {}), r.invoice) if CHECK_SNAPSHOT else []
         if changes:
             r.status, r.stage, r.paid, r.outstanding = "needs_review", None, Decimal("0.00"), r.invoice.amount
-            r.why_not_paid = (f"invoice changed since you confirmed it ({'; '.join(changes)}): check it, then confirm again "
-                              f"or run `invoice-chaser unmark-paid {r.invoice.id}`")
+            r.why_not_paid = (f"invoice changed since you confirmed it ({'; '.join(changes)}): check it, then run "
+                              f"`invoice-chaser unmark-paid {r.invoice.id}` and run again for a fresh suggestion "
+                              f"(or `invoice-chaser mark-paid {r.invoice.id}` once you have checked)")
             r.note = "confirmation no longer matches invoices.csv: no reminder drafted until you check"
             r.matches, r.suggestions = [], []
             warnings.append(f"{r.invoice.id}: {r.why_not_paid}")
@@ -143,7 +176,14 @@ def run(args) -> int:
             r.confidence = 1.0
 
     # ---- the tool's own output: suggestions, never paid ----
+    for r in results:  # say why a rejected payment is no longer suggested
+        keys = rejected.get(r.invoice.id.strip().lower())
+        if keys and r.status in ("overdue", "needs_review"):
+            r.why_not_paid = f"you rejected {', '.join(k.split(':', 1)[-1] for k in keys)} for this invoice; " + (r.why_not_paid or "")
+    _age_and_stick(results, out, cfg, today)
     suggestions = _suggestions(results, received_marks, cfg, today)
+    for s in suggestions:
+        s["ledger_state"] = _ledger_state(paid_marks, received_marks, rejected, s["invoice_id"])
     if not cfg.sender_email:
         warnings.append("sender_email is not set: set sender_email in your config file. "
                         "Drafts use a placeholder From address until you do.")
@@ -189,15 +229,24 @@ def run(args) -> int:
                       "subject": subject, "body": body})
         r.draft_status = "drafted"
 
+    stuck = sorted((r for r in results if r.stuck), key=lambda r: -r.days_overdue)
+    n_client = len(items)
+    for r in stuck:  # an internal note to YOU, never to the client
+        items.append(_check_item(r, cfg, _out_hint(args.out)))
+        r.draft_status = f"no client draft; STUCK {r.waiting_days} day(s): internal note drafted for you"
+
     out.mkdir(parents=True, exist_ok=True)
     settled = {r.invoice.id.lower() for r in results if r.status in ("paid", "void")}
     write_drafts(items, out, warnings, settled)
-    (out / "suggestions.json").write_text(json.dumps({"run_date": today.isoformat(), "suggestions": suggestions},
-                                                     indent=2, ensure_ascii=False), encoding="utf-8")
-    drafts = {it["invoice_id"]: it["file"] for it in items}
+    inputs = [{"name": Path(f).name, "path": str(Path(f).resolve()), "sha256": _file_hash(f)}
+              for f in [args.invoices, *(args.wise or []), *(args.payoneer or []), *(args.bank or []),
+                        *([args.mapping] if args.mapping else []), *([args.config] if args.config else [])]]
+    (out / "suggestions.json").write_text(json.dumps({"run_date": today.isoformat(), "generated_on": date.today().isoformat(),
+                                                     "inputs": inputs, "suggestions": suggestions}, indent=2, ensure_ascii=False), encoding="utf-8")
+    drafts = {it["invoice_id"]: it["file"] for it in items if not it.get("internal")}
     write_status_csv(results, drafts, out / "status.csv")
     (out / "review.html").write_text(render_html(results, leftovers, drafts, today, warnings, early, opts.ignored,
-                                                 str(args.out), suggestions), encoding="utf-8")
+                                                 _out_hint(args.out), suggestions), encoding="utf-8")
 
     counts: dict[str, int] = {}
     for r in results:
@@ -212,7 +261,10 @@ def run(args) -> int:
     if strong:
         print(f"  {len(strong)} suggested payment(s) wait for you: `invoice-chaser confirm <INV>`"
               f"{' or `confirm --all-strong`' if any(s['kind'] == 'paid' for s in strong) else ''}")
-    print(f"  {len(items)} draft(s) written (nothing sent) -> {out / 'drafts'}")
+    if stuck:
+        print(f"  !! {len(stuck)} invoice(s) STUCK waiting for your decision: oldest {stuck[0].invoice.id}, "
+              f"{stuck[0].days_overdue} days overdue. Decide with confirm / reject / mark-paid (a note to you is in drafts/).")
+    print(f"  {n_client} draft(s) written (nothing sent) -> {out / 'drafts'}")
     print(f"  {out / 'status.csv'}\n  {out / 'review.html'}")
     if early:
         print(f"  {len(early)} payment(s) dated outside an invoice's window: listed in review.html (check the date format)")
@@ -253,6 +305,55 @@ def _suggestions(results, received_marks, cfg, today) -> list[dict]:
     return out
 
 
+def _age_and_stick(results, out: Path, cfg, today: date) -> None:
+    """Remember when each suggestion / review first appeared (out/seen.json). One that waits longer than
+    stuck_after_days, or belongs to an invoice more than 30 days overdue, is STUCK: loud banner, CLI line and an
+    internal note to you, so a wrong suggestion can never silently park an unpaid invoice."""
+    seen_file = out / "seen.json"
+    try:
+        history = json.loads(seen_file.read_text(encoding="utf-8-sig"))
+        if not isinstance(history, dict):
+            history = {}
+    except (OSError, ValueError):
+        history = {}
+    now: dict[str, str] = {}
+    for r in results:
+        if r.status not in ("suggested_paid", "partial_suggested", "needs_review"):
+            continue
+        ms = r.matches if r.status != "needs_review" else r.suggestions
+        ident = ",".join(sorted(f"{m.source}:{m.payment_id}" for m in ms)) or hashlib.sha256(r.why_not_paid.encode()).hexdigest()[:10]
+        key = f"{r.invoice.id.strip().lower()}|{r.status}|{ident}"
+        first = history.get(key) or today.isoformat()
+        try:
+            age = max((today - date.fromisoformat(first)).days, 0)
+        except ValueError:
+            first, age = today.isoformat(), 0
+        now[key] = first
+        r.waiting_days = age
+        r.stuck = age > cfg.stuck_after_days or r.days_overdue > 30
+    out.mkdir(parents=True, exist_ok=True)
+    seen_file.write_text(json.dumps(now, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _check_item(r, cfg, out_hint: str) -> dict:
+    inv = r.invoice
+    flag = "" if out_hint == "out" else f" --out {out_hint}"
+    lines = [f"Invoice {inv.id} ({inv.client}, {inv.amount:,.2f} {inv.currency}, due {inv.due.isoformat()}) is {r.days_overdue} days overdue and has "
+             f"been waiting for your decision for {r.waiting_days} day(s). No reminder goes to the client while it waits.", "",
+             f"Status: {r.status}", f"Why: {r.why_not_paid}", ""]
+    for m in (r.matches if r.status != "needs_review" else r.suggestions):
+        lines.append(f"Payment {m.payment_id} ({m.source}), {m.payment_date.isoformat()}, {m.amount:,.2f} {m.currency}, payer: {m.payer or '(none)'}")
+        lines.append(f"  text: {m.payment_description}")
+    lines += ["", "Decide with one of:",
+              f"  invoice-chaser confirm {inv.id}{flag}      (the payment is right)" if r.status != "needs_review" else
+              f"  invoice-chaser mark-paid {inv.id}{flag}    (you checked: it is paid)",
+              f"  invoice-chaser reject {inv.id} <payment id>{flag}   (that payment is not this invoice's: the client gets chased)",
+              "", "This note is for you. It was not sent to the client."]
+    return {"invoice_id": inv.id, "stage": "check", "internal": True, "to": cfg.sender_email or "set-sender-email@example.invalid", "from_name": "invoice-chaser",
+            "from_email": cfg.sender_email, "subject": f"Check {inv.id}: waiting for your decision ({r.waiting_days} days)",
+            "body": "\n".join(lines) + "\n"}
+
+
 # ---------------------------------------------------------------- commands that record YOUR decisions
 
 def _status_ids(out: Path):
@@ -287,14 +388,36 @@ def _resolve_invoice(args) -> tuple[str, date]:
     return invoice_id, when
 
 
-def _load_suggestions(out: Path) -> list[dict]:
+def _load_suggestions(out: Path) -> tuple[list[dict], dict]:
     f = out / "suggestions.json"
     if not f.exists():
-        raise ValueError(f"{f} not found: run `invoice-chaser run` first")
+        raise ValueError(f"{f.name} not found in {out}: run `invoice-chaser run` first")
     try:
-        return json.loads(f.read_text(encoding="utf-8-sig"))["suggestions"]
+        meta = json.loads(f.read_text(encoding="utf-8-sig"))
+        return meta["suggestions"], meta
     except (ValueError, KeyError, TypeError) as e:
-        raise ValueError(f"{f} is not readable ({e}); run `invoice-chaser run` again") from e
+        raise ValueError(f"{f.name} is not readable ({e}); run `invoice-chaser run` again") from e
+
+
+def _check_still_valid(entries: list[dict], meta: dict, lpath: Path, real_today: date) -> None:
+    """A suggestion is only a suggestion about the exports it was made from. Refuse to confirm it if the day, the
+    exports or the ledger's view of that invoice (a reject, a confirm, a mark-paid) changed since the last run."""
+    generated = meta.get("generated_on")
+    if generated != real_today.isoformat():
+        raise ValueError(f"the suggestions are from {generated or 'an unknown day'}, not today ({real_today.isoformat()}): "
+                         f"run `invoice-chaser run` again, look at the result, then confirm")
+    for f in meta.get("inputs", []):
+        try:
+            changed = _file_hash(f["path"]) != f["sha256"]
+        except OSError:
+            raise ValueError(f"{f['name']} is gone since the last run: run `invoice-chaser run` again") from None
+        if changed:
+            raise ValueError(f"{f['name']} changed since the last run: run `invoice-chaser run` again, then confirm")
+    paid, received, rejected = ci(load_paid(lpath)), ci(load_received(lpath)), ci(load_rejected(lpath))
+    for e in entries:
+        if e.get("ledger_state") and e["ledger_state"] != _ledger_state(paid, received, rejected, e["invoice_id"]):
+            raise ValueError(f"your ledger changed for {e['invoice_id']} since the last run (a reject, confirm or mark-paid): "
+                             f"run `invoice-chaser run` again, then confirm")
 
 
 def _apply_confirm(entry: dict, when: date, lpath: Path) -> str:
@@ -312,7 +435,7 @@ def _apply_confirm(entry: dict, when: date, lpath: Path) -> str:
 def confirm(args) -> int:
     out = Path(args.out)
     lpath = _ledger_path(args)
-    entries = _load_suggestions(out)
+    entries, meta = _load_suggestions(out)
     real_today = date.fromisoformat(args.today) if getattr(args, "today", None) else date.today()
     when = date.fromisoformat(args.date) if args.date else real_today
     if when > real_today:
@@ -322,21 +445,26 @@ def confirm(args) -> int:
         if not todo:
             print("nothing to confirm: no strong suggested-paid invoices in the last run")
             return 0
-        print("These invoices will be recorded as PAID in the ledger:")
+        _check_still_valid(todo, meta, lpath, real_today)
+        print("These invoices will be recorded as PAID in the ledger. Read the payer and the text of each payment:")
         for e in todo:
-            pays = "; ".join(f"{p['id']} {p['date']} {p['amount']} {p['currency']} from {p['payer'] or '(no payer)'}" for p in e["payments"])
-            print(f"  {e['invoice_id']:<10} {e['client']}  {e['currency']} {Decimal(e['amount']):,.2f}  <- {pays}")
+            print(f"  {e['invoice_id']}  {e['client']}  {e['currency']} {Decimal(e['amount']):,.2f}")
+            for p in e["payments"]:
+                print(f"      payment {p['id']} ({p['source']}) {p['date']}  {Decimal(p['amount']):,.2f} {p['currency']}")
+                print(f"        payer: {p['payer'] or '(none)'}")
+                print(f"        text:  {p['description'] or '(none)'}")
         if not args.yes:
             try:
                 answer = input(f"Confirm {len(todo)} invoice(s) as paid? [y/N] ").strip().lower()
             except EOFError:
+                print()
                 answer = ""
             if answer not in ("y", "yes"):
                 print("nothing recorded")
                 return 1
         for e in todo:
             print("  " + _apply_confirm(e, when, lpath))
-        print(f"recorded {len(todo)} confirmation(s) -> {lpath}\n  re-run `invoice-chaser run` to update the report")
+        print(f"recorded {len(todo)} confirmation(s) -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
         return 0
     if not args.invoice:
         raise ValueError("give an invoice id, or use --all-strong")
@@ -347,15 +475,16 @@ def confirm(args) -> int:
         raise ValueError(f"no strong suggestion for {args.invoice} in the last run"
                          + (" (it only has weak candidates: if you checked and it is paid, use `invoice-chaser mark-paid`)" if weak
                             else " (use `invoice-chaser mark-paid` if you checked yourself)"))
+    _check_still_valid([entry], meta, lpath, real_today)
     print(_apply_confirm(entry, when, lpath))
-    print(f"recorded -> {lpath}\n  re-run `invoice-chaser run` to update the report")
+    print(f"recorded -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
     return 0
 
 
 def reject(args) -> int:
     out = Path(args.out)
     invoice_id, _ = _resolve_invoice(argparse.Namespace(invoice=args.invoice, out=args.out, force=args.force, today=None, date=None))
-    entries = _load_suggestions(out)
+    entries, _ = _load_suggestions(out)
     want = args.payment.strip()
     keys = {}
     for e in entries:
@@ -384,7 +513,7 @@ def mark_sent(args) -> int:
             drafted = json.loads((out / "drafts.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             drafted = []
-        stage = next((d["stage"] for d in drafted if str(d.get("invoice_id", "")).lower() == invoice_id.lower()), None)
+        stage = next((d["stage"] for d in drafted if str(d.get("invoice_id", "")).lower() == invoice_id.lower() and not d.get("internal")), None)
         if not stage:
             raise ValueError(f"no --stage given and no draft for {invoice_id} in {out / 'drafts.json'}")
     if stage not in STAGES:
@@ -428,13 +557,19 @@ def unmark_paid(args) -> int:
 
 def demo(args) -> int:
     d = DEMO_DIR
-    a = argparse.Namespace(
-        invoices=str(d / "invoices.csv"), wise=[str(d / "wise-statement.csv")],
-        payoneer=[str(d / "payoneer-transactions.csv")], bank=[str(d / "bank-export.csv")],
-        mapping=str(d / "bank-mapping.json"), config=str(d / "invoice-chaser.json"),
-        templates=None, out=args.out, today=args.today or DEMO_TODAY.isoformat(),
-        tone=args.tone, sender_name=None, llm=False, ledger=None, date_format=None, strict=False, decimal_comma=False)
-    return run(a)
+    keep = getattr(args, "keep_ledger", False)
+    with tempfile.TemporaryDirectory(prefix="invoice-chaser-demo-") as tmp:
+        a = argparse.Namespace(
+            invoices=str(d / "invoices.csv"), wise=[str(d / "wise-statement.csv")],
+            payoneer=[str(d / "payoneer-transactions.csv")], bank=[str(d / "bank-export.csv")],
+            mapping=str(d / "bank-mapping.json"), config=str(d / "invoice-chaser.json"),
+            templates=None, out=args.out, today=args.today or DEMO_TODAY.isoformat(),
+            tone=args.tone, sender_name=None, llm=False, ledger=None if keep else str(Path(tmp) / "sent.json"),
+            date_format=None, strict=False, decimal_comma=False)
+        code = run(a)
+    if code == 0 and not keep:
+        print("  (demo starts from a fresh ledger every run; add --keep-ledger to keep your confirm / mark decisions between runs)")
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -503,6 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="out")
     d.add_argument("--today")
     d.add_argument("--tone", choices=["friendly", "neutral", "firm"])
+    d.add_argument("--keep-ledger", action="store_true", help="use <out>/sent.json (your confirm / mark decisions) instead of a fresh ledger")
     d.set_defaults(fn=demo)
     return p
 

@@ -28,7 +28,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 
 from .config import Config
-from .decision import IdIndex, company_key, field_texts, has_negative_context, same_company
+from .decision import IdIndex, company_key, field_texts, has_negative_context, same_company, strip_client_name
 from .ladder import days_overdue, stage_for
 from .models import Invoice, InvoiceResult, Match, Payment
 
@@ -125,7 +125,8 @@ class _Info:
     text: str
     ids: frozenset  # known invoice ids named in the payment (strict whole tokens, fields searched separately)
     foreign: frozenset  # id-like tokens of the same family that are NOT in the invoice list
-    neg: bool  # refund / reversal / failure wording
+    neg: bool  # refund / reversal / failure wording somewhere in the payment (before the client's own name is removed)
+    texts: tuple = ()  # the fields that were searched, to re-check the wording per invoice
 
 
 @dataclass
@@ -141,12 +142,13 @@ def _info_for(p: Payment, index: IdIndex) -> _Info:
     ids: set[str] = set()
     foreign: set[str] = set()
     neg = False
-    for text in field_texts(p.description, p.payer):
+    texts = tuple(field_texts(p.description, p.payer))
+    for text in texts:
         i, f = index.analyse(text, MAX_NAMED)
         ids |= i
         foreign |= f
         neg = neg or has_negative_context(text)
-    return _Info(f"{p.description} | {p.payer}", frozenset(ids), frozenset(foreign), neg)
+    return _Info(f"{p.description} | {p.payer}", frozenset(ids), frozenset(foreign), neg, texts if neg else ())
 
 
 def _rate(pay_cur: str, inv_cur: str, rates: dict[str, str]) -> Decimal | None:
@@ -174,10 +176,13 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
     less = conv < inv.amount and not within
     more = conv > inv.amount and not within
     company = same_company(inv.client, pay.payer)
+    neg = info.neg
+    if neg:  # the client's own name may contain such a word (Pending Ventures, Chargebacks911): remove it and look again
+        neg = any(has_negative_context(strip_client_name(t, inv.client)) for t in info.texts)
 
     # ---- the evidence table (decision.py): STRONG evidence becomes a suggestion, never "paid" ----
-    path_a = unique and not info.foreign and not info.neg and pay.amount > 0 and (within or less)
-    path_b = ((not ids) and not info.foreign and exact and rate == 1 and company and not info.neg
+    path_a = unique and not info.foreign and not neg and pay.amount > 0 and (within or less)
+    path_b = ((not ids) and not info.foreign and exact and rate == 1 and company and not neg
               and pay.amount > 0 and not ctx.peers and not ctx.ambiguous_name)
     auto = (path_a or path_b) and not pay.suspect and not problem
 
@@ -218,7 +223,7 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
             parts.append(f"payment {problem}")
         if pay.suspect:
             parts.append(pay.suspect)
-        if info.neg:
+        if neg:
             parts.append("the payment mentions a refund, reversal, failure or non-receipt")
         if info.foreign:
             parts.append("the payment names an invoice id that is not in your invoice list (" + ", ".join(sorted(info.foreign)) + ")")

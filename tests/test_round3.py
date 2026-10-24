@@ -86,22 +86,22 @@ def test_memory_and_recursion_errors_are_reported_cleanly(monkeypatch, tmp_path,
 
 def test_edited_draft_of_a_paid_invoice_is_moved_not_deleted(tmp_path, capsys):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     f = out / "drafts" / "INV-1004-nudge.eml"
     f.write_text("MY EDITED WORDS", encoding="utf-8")
-    main(["demo", "--out", str(out)])                                       # still unpaid: kept, and the warning repeats
+    main(["demo", "--keep-ledger", "--out", str(out)])                                       # still unpaid: kept, and the warning repeats
     assert f.read_text(encoding="utf-8") == "MY EDITED WORDS"
     assert "INV-1004-nudge.eml was edited by you" in (out / "review.html").read_text(encoding="utf-8")
     assert json.loads((out / "kept.json").read_text(encoding="utf-8")) == {"INV-1004-nudge.eml": "INV-1004"}
     capsys.readouterr()
     assert main(["mark-paid", "INV-1004", "--out", str(out), "--today", "2026-10-25"]) == 0
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert not f.exists()
     moved = out / "drafts" / "stale" / "INV-1004-nudge.eml"
     assert moved.read_text(encoding="utf-8") == "MY EDITED WORDS"           # never deleted
     assert "moved to drafts/stale/" in (out / "review.html").read_text(encoding="utf-8")
     assert json.loads((out / "kept.json").read_text(encoding="utf-8")) == {}
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert moved.exists() and "moved to drafts/stale/" not in (out / "review.html").read_text(encoding="utf-8")
 
 
@@ -120,18 +120,18 @@ def test_stale_name_collisions_do_not_overwrite(tmp_path):
 
 def test_unmark_paid_and_second_mark_warns(tmp_path, capsys):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert main(["mark-paid", "INV-1006", "--out", str(out), "--date", "2026-10-20", "--today", "2026-10-25"]) == 0
     capsys.readouterr()
     assert main(["mark-paid", "inv-1006", "--out", str(out), "--date", "2026-10-24", "--today", "2026-10-25"]) == 0
     err = capsys.readouterr().err
     assert "already marked paid (on 2026-10-20)" in err
     assert load_paid(out / "sent.json")["INV-1006"]["date"] == "2026-10-20"      # unchanged
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert _status(out)["INV-1006"]["status"] == "paid"
     assert main(["unmark-paid", "inv-1006", "--out", str(out)]) == 0
     assert load_paid(out / "sent.json") == {}
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert _status(out)["INV-1006"]["status"] == "needs_review"
     assert main(["unmark-paid", "INV-1006", "--out", str(out)]) == 2
     assert "not marked paid" in capsys.readouterr().err

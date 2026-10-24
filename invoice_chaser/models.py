@@ -64,3 +64,5 @@ class InvoiceResult:
     draft_status: str = ""
     last_reminder: date | None = None
     why_not_paid: str = ""
+    waiting_days: int = 0  # how long this suggestion / review has been waiting for your decision
+    stuck: bool = False

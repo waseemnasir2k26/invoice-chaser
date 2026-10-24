@@ -78,7 +78,7 @@ def test_unknown_block_and_unbalanced_tag_raise():
 
 
 def test_demo_uses_last_reminder_column(tmp_path):
-    assert main(["demo", "--out", str(tmp_path)]) == 0
+    assert main(["demo", "--keep-ledger", "--out", str(tmp_path)]) == 0
     esc = (tmp_path / "drafts" / "INV-1005-escalation.eml").read_text(encoding="utf-8").replace("=\n", "")
     assert "my reminder of 2026-10-05" in esc
     assert "paused" not in esc          # the demo shows the defaults: pause wording is opt-in
@@ -220,26 +220,26 @@ def test_drafts_json_cannot_point_outside(tmp_path):
 
 def test_mark_sent_flow(tmp_path):
     out = tmp_path / "out"
-    assert main(["demo", "--out", str(out)]) == 0
+    assert main(["demo", "--keep-ledger", "--out", str(out)]) == 0
     assert (out / "drafts" / "INV-1004-nudge.eml").exists()
     assert main(["mark-sent", "INV-1004", "--out", str(out), "--date", "2026-10-25", "--today", "2026-10-25"]) == 0  # stage from drafts.json
     assert load_ledger(out / "sent.json") == {"INV-1004": [{"stage": "nudge", "date": "2026-10-25"}]}
     # same stage again: not re-drafted, reason shown
-    assert main(["demo", "--out", str(out)]) == 0
+    assert main(["demo", "--keep-ledger", "--out", str(out)]) == 0
     assert not (out / "drafts" / "INV-1004-nudge.eml").exists()
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(out / "status.csv", encoding="utf-8"))}
     row = rows["INV-1004"]
     assert "nudge already sent 2026-10-25" in row["draft_status"] and "next stage firm in 3 day(s)" in row["draft_status"]
     assert row["last_reminder"] == "2026-10-25"
     # later: next stage is drafted and worded as a follow-up
-    assert main(["demo", "--out", str(out), "--today", "2026-10-29"]) == 0
+    assert main(["demo", "--keep-ledger", "--out", str(out), "--today", "2026-10-29"]) == 0
     eml = (out / "drafts" / "INV-1004-firm.eml").read_text(encoding="utf-8").replace("=\n", "")
     assert "This follows my reminder of 2026-10-25" in eml
 
 
 def test_mark_sent_validation(tmp_path):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     with pytest.raises(SystemExit):
         main(["mark-sent", "INV-1004", "--stage", "bogus", "--out", str(out)])
     assert main(["mark-sent", "NOPE-1", "--stage", "nudge", "--out", str(out)]) == 2
@@ -261,7 +261,7 @@ def test_ledger_roundtrip_and_corruption(tmp_path):
 def test_higher_stage_sent_early_suppresses_lower_draft(tmp_path):
     out = tmp_path / "out"
     record_sent(out / "sent.json", "INV-1008", "final", date(2026, 10, 20))   # sent ahead of the ladder
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert not (out / "drafts" / "INV-1008-firm.eml").exists()
 
 

@@ -37,34 +37,49 @@ def flips(monkeypatch, scenario, *patches):
     return scenario() == SUGGESTED
 
 
-REFUND = ["refund", "reembolso", "Rückerstattung", "Rueckerstattung", "remboursement", "rimborso", "storno", "terugbetaling",
-          "zwrot", "возврат", "Gutschrift", "avoir", "estorno", "iade", "استرداد", "واپسی", "reversal", "chargeback",
-          "returned", "cancelled", "voided", "disputed"]
-FAILURE = ["failed", "payment failed", "pending", "declined", "rejected", "bounced", "NSF", "unpaid", "insufficient funds"]
+NO_WORDS = [(decision, "NEGATIVE_WORDS", frozenset()), (decision, "LONG_STEMS", ()), (decision, "SUBSTRINGS", ()), (decision, "PHRASES", ())]
+
+REFUND = ["refund", "reembolso", "Rückerstattung", "Rueckerstattung", "Erstattung", "Rückzahlung", "Rücklastschrift", "remboursement",
+          "rimborso", "storno", "terugbetaling", "zwrot", "возврат", "Gutschrift", "avoir", "estorno", "iade", "استرداد", "واپسی",
+          "reversal", "chargeback", "returned", "cancelled", "voided", "disputed", "devolución", "devolução", "retour", "restitution",
+          "annulé", "clawback", "money back", "repayment", "reimbursement", "pengembalian", "återbetalning", "tilbagebetaling",
+          "tilbakebetaling", "rambursare", "visszatérítés", "palautus", "vrácení", "بازپرداخت", "החזר"]
+SUBSTRING_WORDS = ["返金", "退款", "返品", "환불", "คืนเงิน", "वापसी", "ফেরত", "επιστροφή", "hoàn tiền"]
+FAILURE = ["failed", "payment failed", "pending", "declined", "rejected", "bounced", "NSF", "unpaid", "insufficient funds", "denied",
+           "blocked", "on hold", "not paid", "not completed", "unsuccessful", "wasn't received", "didn't go through", "not received",
+           "not yet received", "was not received", "did not go through"]
 
 
 @pytest.mark.parametrize("word", REFUND)
 def test_class_multilingual_refund_words(monkeypatch, word):
-    assert flips(monkeypatch, lambda: one(text=f"{word} INV-1004"), (decision, "REFUND_STEMS", ()))
+    assert flips(monkeypatch, lambda: one(text=f"{word} INV-1004"), *NO_WORDS)
 
 
-@pytest.mark.parametrize("word", ["返金", "退款", "返品"])
-def test_class_cjk_refund_words(monkeypatch, word):
-    assert flips(monkeypatch, lambda: one(text=f"{word}済み INV-1004"), (decision, "CJK_SUBSTRINGS", ()))
+@pytest.mark.parametrize("word", SUBSTRING_WORDS)
+def test_class_non_latin_refund_words(monkeypatch, word):
+    assert flips(monkeypatch, lambda: one(text=f"{word}済み INV-1004"), *NO_WORDS)
 
 
 @pytest.mark.parametrize("word", FAILURE)
 def test_class_failure_words(monkeypatch, word):
-    assert flips(monkeypatch, lambda: one(text=f"INV-1004 {word}"), (decision, "FAILURE_STEMS", ()))
+    assert flips(monkeypatch, lambda: one(text=f"INV-1004 {word}"), *NO_WORDS)
 
 
-@pytest.mark.parametrize("text", ["INV-1004 not received", "not yet received INV-1004", "credit note INV-1004", "credit memo INV-1004"])
-def test_class_phrase_wording(monkeypatch, text):
-    assert flips(monkeypatch, lambda: one(text=text), (matching, "has_negative_context", lambda t: False))
+@pytest.mark.parametrize("text", ["credit note INV-1004", "credit memo INV-1004", "INV-1004 credit nota"])
+def test_class_credit_notes(monkeypatch, text):
+    assert flips(monkeypatch, lambda: one(text=text), (decision, "_CREDIT_NOTE", set()))
 
 
 def test_credit_alone_is_not_a_refund():
     assert one(text="Credit transfer INV-1004 thanks") == SUGGESTED
+
+
+@pytest.mark.parametrize("name", ["Stornoway Ltd", "Returnly", "Voidstar", "Pending Ventures", "Kreditech", "Chargebacks911",
+                                  "Refundly Inc", "Cancelot", "Failsafe Co", "Blockchain Labs", "Denise Holdings", "Retourist"])
+def test_client_names_that_contain_a_refund_word_are_not_blocked(name):
+    assert one(client=name, payer=name, text="") == SUGGESTED                       # path B: the client itself
+    assert one(client=name, payer=name, text=f"Received from {name} INV-1004") == SUGGESTED   # path A, name in the text
+    assert one(client=name, payer=name, text=f"refund {name} INV-1004") != SUGGESTED          # but a real refund word still blocks
 
 
 def test_class_description_and_payer_are_never_glued(monkeypatch):
@@ -181,6 +196,9 @@ def test_word_lists_in_the_readme_match_the_code():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     block = mod.build_samples()["negative-words"]
-    for stem in decision.REFUND_STEMS + decision.FAILURE_STEMS + decision.CJK_SUBSTRINGS:
-        assert stem in block
-    assert "credit note" in block and "not received" in block
+    for entry in sorted(decision.NEGATIVE_WORDS) + list(decision.LONG_STEMS) + list(decision.SUBSTRINGS):
+        assert entry in block, entry
+    for phrase in decision.PHRASES:
+        assert " ".join(phrase) in block, phrase
+    for follow in decision._CREDIT_NOTE:
+        assert follow in block

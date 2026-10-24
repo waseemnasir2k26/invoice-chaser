@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import codecs
 import csv
+import hashlib
 import io
 import re
 from dataclasses import dataclass, field
@@ -342,6 +343,20 @@ def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skippe
     return out
 
 
+def stable_id(source: str, real_id: str, d: date, amount: Decimal, currency: str, description: str, payer: str,
+              seen: dict) -> str:
+    """The id of a payment row. A real transaction id is used as is. Otherwise: a hash of what the row says
+    (source, date, amount, currency, description, payer), never the row number, so re-exporting the
+    statement (new rows, other order) cannot move an id onto a different payment. Rows that are identical
+    in every field get an occurrence counter, so two genuine identical payments stay two payments."""
+    if real_id:
+        return real_id
+    clean = lambda t: " ".join((t or "").casefold().split())  # noqa: E731
+    base = "|".join([source, d.isoformat(), format(amount.normalize(), "f"), currency, clean(description), clean(payer)])
+    seen[base] = seen.get(base, 0) + 1
+    return "h-" + hashlib.sha256(f"{base}#{seen[base]}".encode("utf-8")).hexdigest()[:12]
+
+
 def _ignored(opts: ParseOptions, source: str, id_: str, d: date, amt: Decimal, cur: str, desc: str, payer: str) -> None:
     opts.ignored.append(Payment(id_, d, amt, cur, desc, payer, source))
 
@@ -361,6 +376,7 @@ def parse_wise(path: str | Path, opts: ParseOptions | None = None) -> list[Payme
     c_payer = _pick(cm, ["payername", "sendername"])
     note_date_ambiguity(path, [_get(r, c_date) for r in rows], opts)
     out = []
+    ids_seen: dict = {}
     for n, r in enumerate(rows, start=2):
         if not _get(r, c_amt):
             continue
@@ -373,11 +389,11 @@ def parse_wise(path: str | Path, opts: ParseOptions | None = None) -> list[Payme
             continue
         desc = _join(_get(r, c_desc), _get(r, c_ref), _get(r, c_note))
         if amt < 0:
-            _ignored(opts, str(path), _get(r, c_id) or f"wise-{n}", d, amt, cur, desc, _get(r, c_payer))
+            _ignored(opts, str(path), stable_id("wise", _get(r, c_id), d, amt, cur, desc, _get(r, c_payer), ids_seen), d, amt, cur, desc, _get(r, c_payer))
             continue
         if amt == 0:
             continue
-        out.append(Payment(_get(r, c_id) or f"wise-{n}", d, amt, cur, desc, _get(r, c_payer), "wise"))
+        out.append(Payment(stable_id("wise", _get(r, c_id), d, amt, cur, desc, _get(r, c_payer), ids_seen), d, amt, cur, desc, _get(r, c_payer), "wise"))
     return _finish(path, len(rows), out, opts)
 
 
@@ -395,6 +411,7 @@ def parse_payoneer(path: str | Path, opts: ParseOptions | None = None) -> list[P
     c_payer = _pick(cm, ["payername", "sender", "from", "payer"])
     note_date_ambiguity(path, [_get(r, c_date) for r in rows], opts)
     out, skipped = [], 0
+    ids_seen: dict = {}
     for n, r in enumerate(rows, start=2):
         if not _get(r, c_amt):
             continue
@@ -414,11 +431,11 @@ def parse_payoneer(path: str | Path, opts: ParseOptions | None = None) -> list[P
             m = re.match(r"(?i)\s*payment\s+from\s+(.+?)(?:\s+(?:inv|invoice|ref)\b.*)?$", desc)
             payer = m.group(1).strip() if m else ""
         if amt < 0:
-            _ignored(opts, str(path), _get(r, c_id) or f"payoneer-{n}", d, amt, cur, desc, payer)
+            _ignored(opts, str(path), stable_id("payoneer", _get(r, c_id), d, amt, cur, desc, payer, ids_seen), d, amt, cur, desc, payer)
             continue
         if amt == 0:
             continue
-        out.append(Payment(_get(r, c_id) or f"payoneer-{n}", d, amt, cur, desc, payer, "payoneer"))
+        out.append(Payment(stable_id("payoneer", _get(r, c_id), d, amt, cur, desc, payer, ids_seen), d, amt, cur, desc, payer, "payoneer"))
     return _finish(path, len(rows), out, opts, skipped)
 
 
@@ -450,6 +467,7 @@ def parse_generic(path: str | Path, mapping: dict[str, str], opts: ParseOptions 
     if not fmt:
         note_date_ambiguity(path, [_get(r, c_date) for r in rows], opts)
     out = []
+    ids_seen: dict = {}
     for n, r in enumerate(rows, start=2):
         if not _get(r, c_amt):
             continue
@@ -461,9 +479,9 @@ def parse_generic(path: str | Path, mapping: dict[str, str], opts: ParseOptions 
             _bad_row(opts, path, n, e)
             continue
         if amt < 0:
-            _ignored(opts, str(path), _get(r, c_id) or f"bank-{n}", d, amt, cur, _get(r, c_desc), _get(r, c_payer))
+            _ignored(opts, str(path), stable_id("bank", _get(r, c_id), d, amt, cur, _get(r, c_desc), _get(r, c_payer), ids_seen), d, amt, cur, _get(r, c_desc), _get(r, c_payer))
             continue
         if amt == 0:
             continue
-        out.append(Payment(_get(r, c_id) or f"bank-{n}", d, amt, cur, _get(r, c_desc), _get(r, c_payer), "bank"))
+        out.append(Payment(stable_id("bank", _get(r, c_id), d, amt, cur, _get(r, c_desc), _get(r, c_payer), ids_seen), d, amt, cur, _get(r, c_desc), _get(r, c_payer), "bank"))
     return _finish(path, len(rows), out, opts)

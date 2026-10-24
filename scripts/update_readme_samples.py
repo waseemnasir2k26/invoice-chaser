@@ -46,14 +46,16 @@ def build_samples() -> dict[str, str]:
 
     nl = chr(10)
     words = nl.join([
-        "Refund, reversal, return, cancellation (word stems, matched at the start of a word, any case):",
-        "  " + ", ".join(decision.REFUND_STEMS),
-        "Failure and non-receipt (word stems):",
-        "  " + ", ".join(decision.FAILURE_STEMS),
-        "Scripts written without spaces (found anywhere in the text):",
-        "  " + ", ".join(decision.CJK_SUBSTRINGS),
-        "Phrases:",
-        "  credit note, credit memo, not received, not yet received",
+        "Whole words (the word must equal the entry, any case):",
+        "  " + ", ".join(sorted(decision.NEGATIVE_WORDS)),
+        "Long stems (found inside a word, to cover inflections):",
+        "  " + ", ".join(decision.LONG_STEMS),
+        "Scripts written without spaces, and phrases in other languages (found anywhere in the text):",
+        "  " + ", ".join(decision.SUBSTRINGS),
+        "English phrases (the words in a row):",
+        "  " + ", ".join(" ".join(ph) for ph in decision.PHRASES),
+        "Credit notes: the word 'credit' followed by one of:",
+        "  " + ", ".join(sorted(decision._CREDIT_NOTE)),
     ])
     return {"demo-output": buf.getvalue().replace("\\", "/"), "eml": eml, "negative-words": words}
 

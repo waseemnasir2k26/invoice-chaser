@@ -15,7 +15,7 @@ STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),
                 ("open", "Open, not yet due"), ("paid", "Paid (confirmed by you or marked paid in invoices.csv)"), ("void", "Void")]
 
 CSV_FIELDS = ["invoice_id", "client", "email", "currency", "amount", "paid", "outstanding", "due",
-              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "draft_status", "draft_file", "last_reminder"]
+              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "waiting_days", "stuck", "draft_status", "draft_file", "last_reminder"]
 
 
 def _csv_safe(v) -> str:
@@ -40,7 +40,7 @@ def write_status_csv(results: list[InvoiceResult], drafts: dict[str, str], path:
             w.writerow([_csv_safe(x) for x in [
                 i.id, i.client, i.email, i.currency, i.amount, r.paid, r.outstanding, i.due.isoformat(),
                 r.status, r.days_overdue, r.stage or "", f"{r.confidence:.2f}",
-                ";".join(m.payment_id for m in r.matches), _reason(r), r.why_not_paid, r.draft_status, drafts.get(i.id, ""),
+                ";".join(m.payment_id for m in r.matches), _reason(r), r.why_not_paid, r.waiting_days, "yes" if r.stuck else "", r.draft_status, drafts.get(i.id, ""),
                 r.last_reminder.isoformat() if r.last_reminder else ""]])
 
 
@@ -86,6 +86,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 .small{color:var(--mut);font-size:12px}
 .cmd{user-select:all;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:12px}
 .confirm{border:1px solid #15803d;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px;background:var(--card)}
+.stuck{border:1px solid #b91c1c;border-left-width:6px;border-radius:8px;padding:10px 14px;margin:0 0 16px;background:var(--card)}
 .warn{background:var(--card);border:1px solid #b45309;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px}
 """
 
@@ -131,6 +132,26 @@ def _confirm_section(suggestions: list[dict], out_hint: str) -> str:
             "<th>Conf.</th><th>Why</th><th>Your decision</th></tr>" + "".join(rows) + "</table></div>" + bulk)
 
 
+def _stuck_section(results: list[InvoiceResult], out_hint: str) -> str:
+    """Invoices that have waited for your decision too long. Loud on purpose: a wrong suggestion must not
+    park an unpaid invoice forever."""
+    stuck = sorted((r for r in results if r.stuck), key=lambda r: -r.days_overdue)
+    if not stuck:
+        return ""
+    out = _out_arg(out_hint)
+    rows = "".join(
+        f"<tr><td>{e(r.invoice.id)}</td><td>{e(r.invoice.client)}</td><td class=n>{e(f'{r.outstanding or r.invoice.amount:,.2f}')} {e(r.invoice.currency)}</td>"
+        f"<td class=n>{e(r.days_overdue)}</td><td class=n>{e(r.waiting_days)}</td><td class=small>{e(r.why_not_paid)}</td>"
+        f"<td>{_cmd('invoice-chaser confirm ' + shlex_quote(r.invoice.id) + out) if r.status != 'needs_review' else _cmd('invoice-chaser mark-paid ' + shlex_quote(r.invoice.id) + out)}</td></tr>"
+        for r in stuck)
+    oldest = stuck[0]
+    return (f"<div class=stuck><strong>{len(stuck)} invoice{'s' if len(stuck) != 1 else ''} stuck waiting for your decision</strong> "
+            f"<span class=small>oldest: {e(oldest.invoice.id)}, {e(oldest.days_overdue)} days overdue. No reminder goes out while a payment is "
+            f"suggested, so decide: confirm it, reject it, or mark it paid. A \"check this one\" note to you is in drafts/.</span></div>"
+            "<div class=wrap><table><tr><th>Invoice</th><th>Client</th><th>Outstanding</th><th>Days overdue</th><th>Waiting (days)</th>"
+            "<th>Why</th><th>Your decision</th></tr>" + rows + "</table></div>")
+
+
 def _markpaid(invoice_id: str, out_hint: str) -> str:
     out = _out_arg(out_hint)
     return ("<div>If you checked and it is paid, run: "
@@ -167,6 +188,7 @@ def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Dec
              f"<title>Invoice review {e(today.isoformat())}</title><style>{CSS}</style></head><body><main>"
              f"<h1>Invoice review</h1><p class=sub>As of {e(today.isoformat())}. Generated locally. "
              f"Nothing was sent: drafts are files for you to read, edit and send yourself.</p>"]
+    parts.append(_stuck_section(results, out_hint))
     parts.append(_confirm_section(suggestions or [], out_hint))
     if warnings:
         parts.append("<div class=warn><strong>Check before using these drafts</strong><ul>"

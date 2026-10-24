@@ -241,10 +241,10 @@ def test_unedited_draft_is_replaced_not_duplicated(tmp_path):
 
 def test_edit_survives_full_cli_rerun(tmp_path):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     f = out / "drafts" / "INV-1004-nudge.eml"
     f.write_text("MY OWN WORDS", encoding="utf-8")
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert f.read_text(encoding="utf-8") == "MY OWN WORDS"
     assert (out / "drafts" / "INV-1004-nudge.new.eml").exists()
     assert "was edited by you and was kept" in (out / "review.html").read_text(encoding="utf-8")
@@ -258,7 +258,7 @@ def test_mark_sent_rejects_future_dates_and_needs_status_or_force(tmp_path, caps
     assert "not found" in capsys.readouterr().err
     assert main(["mark-sent", "INV-1", "--stage", "nudge", "--out", str(out), "--force", "--date", "2026-10-01",
                  "--today", "2026-10-25"]) == 0
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert main(["mark-sent", "INV-1004", "--stage", "nudge", "--out", str(out), "--date", "2026-10-26",
                  "--today", "2026-10-25"]) == 2
     assert "future" in capsys.readouterr().err
@@ -266,7 +266,7 @@ def test_mark_sent_rejects_future_dates_and_needs_status_or_force(tmp_path, caps
 
 def test_mark_sent_ids_are_case_insensitive_and_unknown_refused(tmp_path, capsys):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert main(["mark-sent", " inv-1004 ", "--stage", "nudge", "--out", str(out), "--date", "2026-10-20", "--today", "2026-10-25"]) == 0
     assert list(load_ledger(out / "sent.json")) == ["INV-1004"]           # stored under the real id
     assert main(["mark-sent", "INV-9999", "--stage", "nudge", "--out", str(out), "--today", "2026-10-25"]) == 2
@@ -277,15 +277,15 @@ def test_mark_sent_ids_are_case_insensitive_and_unknown_refused(tmp_path, capsys
 
 def test_ledger_ids_match_case_insensitively_on_run(tmp_path):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     (out / "sent.json").write_text(json.dumps({"sent": {"inv-1004": [{"stage": "nudge", "date": "2026-10-25"}]}, "paid": {}}))
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert not (out / "drafts" / "INV-1004-nudge.eml").exists()
 
 
 def test_mark_paid_flow_and_why_not_paid_and_html_command(tmp_path):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(out / "status.csv", encoding="utf-8"))}
     r = rows["INV-1006"]
     assert r["status"] == "needs_review" and "is not exactly 'Lumen Labs'" in r["why_not_paid"]
@@ -294,7 +294,7 @@ def test_mark_paid_flow_and_why_not_paid_and_html_command(tmp_path):
     assert "invoice-chaser mark-paid INV-1006" in html
     assert main(["mark-paid", "inv-1006", "--out", str(out), "--note", "checked bank", "--today", "2026-10-25"]) == 0
     assert load_paid(out / "sent.json")["INV-1006"]["note"] == "checked bank"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(out / "status.csv", encoding="utf-8"))}
     assert rows["INV-1006"]["status"] == "paid" and rows["INV-1006"]["outstanding"] == "0.00"
     assert "confirmed by you" in rows["INV-1006"]["reason"]
@@ -309,6 +309,6 @@ def test_mark_paid_command_is_escaped_in_html():
 
 def test_mark_paid_unknown_id_refused(tmp_path):
     out = tmp_path / "out"
-    main(["demo", "--out", str(out)])
+    main(["demo", "--keep-ledger", "--out", str(out)])
     assert main(["mark-paid", "NOPE", "--out", str(out)]) == 2
     assert not Path(out / "sent.json").exists()

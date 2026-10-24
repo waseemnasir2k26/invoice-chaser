@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 - 2026-10-25
+
+Fixes from the first review of 1.1.0.
+
+- **Stable payment ids.** A payment's id is its real transaction id, or a hash of source, date, amount, currency, description and payer. Never a row number: after a re-export, a row-numbered id could land on another client's payment, mark it "consumed" and earn a paid client a firm reminder. Old row-keyed ledger entries are dropped with a warning that stays visible in `review.html` (a confirmed invoice stays confirmed).
+- **No more parking.** A suggestion or review that waits longer than `stuck_after_days` (default 7), or belongs to an invoice more than 30 days overdue, is flagged STUCK: banner at the top of `review.html`, a line in the command-line summary, and an internal "check this one" note drafted to you (never to the client). First-seen dates are kept in `out/seen.json`. After a reject, the reason says so.
+- `confirm` re-validates: refused when the suggestions are from another day, when the exports changed, or when the ledger changed for that invoice (a reject, confirm or mark-paid since the last run). `confirm --all-strong` shows each payment's payer and text, and ends cleanly on EOF.
+- Refund and failure wording: 231 entries across twenty-plus languages (Korean, Hindi, Indonesian, Swedish, Danish, Norwegian, Vietnamese, Thai, Hebrew, Czech, Romanian, Hungarian, Greek, Finnish, Bengali, Persian, German, Spanish, Portuguese, French, Italian, Dutch, Polish, Russian, Turkish, Arabic, Urdu, Chinese, Japanese and English phrases such as "money back", "on hold", "not paid", "wasn't received", "didn't go through"). Short words match as whole words only (Stornoway, Returnly, Voidstar, Kreditech are fine), and the client's own name is removed from the text first (Pending Ventures, Chargebacks911). The README list is generated from the code.
+- The ledger is written under a lock file with unique temp names and an atomic replace: twelve parallel `mark-sent` runs keep all twelve entries. Hand-edited NaN / Infinity / negative received amounts give a clean error.
+- The snapshot warning now gives advice that works (`unmark-paid`, run again). `demo` starts from a fresh temporary ledger each run (`--keep-ledger` to keep decisions). `review.html` shows no absolute paths. The README states how the adversarial count is measured.
+
 ## 1.1.0 - 2026-10-25
 
 **Product change: the tool no longer marks anything paid by itself.** Four rounds of review found a new false-paid class in every round (non-English refund words, "payment failed", an earlier settled invoice, ids glued across fields, future dates, short ids like B2, ids inside e-mail addresses, a confirmation that outlived a changed invoice). Piling on rules cannot make an automatic "paid" safe on messy bank text, so the decision is split.

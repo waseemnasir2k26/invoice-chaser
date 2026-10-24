@@ -48,15 +48,55 @@ MASK_EMAIL_URL = True
 SEPARATE_FIELDS = True
 FOREIGN_IDS = True
 
-# Word stems (case-folded, matched at the start of a word) that make a payment unusable as evidence.
-REFUND_STEMS = (
-    "refund", "reembols", "rückerstatt", "rueckerstatt", "rembours", "rimbors", "storn", "terugbetal", "zwrot",
-    "возврат", "gutschrift", "estorn", "iade", "استرداد", "واپسی", "revers", "chargeback", "return", "cancel",
-    "void", "disput", "avoir", "crédit", "kredit",
+# ---- wording that makes a payment unusable as evidence: refunds, reversals, failures, non-receipt ----
+# Four kinds of entry, so that a client called Stornoway, Returnly, Voidstar, Kreditech or Pending Ventures is
+# not mistaken for a refund:
+#   NEGATIVE_WORDS  whole words only (the word must equal the entry, case-folded)
+#   LONG_STEMS      long, distinctive stems (7+ letters) found anywhere inside a word, to cover inflections
+#   SUBSTRINGS      scripts written without spaces or with attached particles (CJK, Thai, Korean, Hindi, Arabic...)
+#   PHRASES         word sequences
+# The client's own name is removed from the text before checking (see strip_client_name), so a client whose
+# name contains one of these (Chargebacks911, Pending Ventures) is not blocked by its own name.
+NEGATIVE_WORDS = frozenset("""
+refund refunds refunded refunding reversal reversals reverse reverses reversed reversing chargeback chargebacks
+return returns returned returning cancel cancels cancelled canceled cancelling canceling cancellation cancellations
+void voided dispute disputes disputed clawback repayment repaid reimbursement reimbursed reimburse restitution
+denied blocked rejected reject rejects declined decline declines bounced bounce failed fail fails failure failures
+pending nsf unpaid unsuccessful overdraft refusal refused
+storno storniert stornierung stornierungen stornieren rückbuchung rueckbuchung rückgabe rueckgabe retour retours
+retourné retournée annulé annulée annulation rejeté rejetée échoué echoué impayé impayée avoir
+reembolso reembolsos reembolsado devolución devolucion devoluciones devuelto anulado anulación anulacion rechazado
+fallido impago pendiente
+estorno estornado devolução devolucao devolvido cancelado recusado pendente falhou
+rimborso rimborsi rimborsato storno annullato respinto insoluto restituzione
+terugbetaling terugbetaald teruggestort restitutie creditnota geannuleerd afgewezen mislukt
+zwrot zwrotu zwroty zwrotem zwrócono anulowane odrzucone
+vrácení vráceno storna zrušeno zamítnuto
+возврат возврата возвраты возвращен возвращён отмена отменен отменён отклонен отклонён
+iade iadesi iptal reddedildi başarısız
+استرداد ارتجاع مرتجع مرفوض ملغي فشل
+واپسی منسوخ ناکام
+بازپرداخت برگشت
+החזר ביטול
+gagal ditolak dibatalkan
+refund
+""".split())
+LONG_STEMS = (
+    "rückerstattung", "rueckerstattung", "erstattung", "rückzahlung", "rueckzahlung", "rücklastschrift", "rucklastschrift",
+    "gutschrift", "stornierung", "remboursement", "annulation", "restitution", "reembolso", "reembolsad",
+    "devolución", "devolução", "rimborso", "rimborsat", "terugbetaling", "terugbetaal", "creditnota", "återbetalning",
+    "tilbagebetaling", "tilbakebetaling", "pengembalian", "pembatalan", "rambursare", "visszatérítés", "palautus",
+    "chargeback", "reimburse", "refunded",
 )
-FAILURE_STEMS = ("fail", "pending", "declin", "reject", "bounc", "nsf", "unpaid", "insufficient", "overdraft")
-# Scripts written without spaces are searched as substrings.
-CJK_SUBSTRINGS = ("返金", "返品", "退款", "退費", "退货", "退貨", "払い戻し", "払戻", "退还")
+SUBSTRINGS = (
+    "返金", "返品", "払い戻し", "払戻", "退款", "退费", "退費", "退货", "退貨", "退还", "환불", "반품", "คืนเงิน", "वापसी",
+    "ফেরত", "επιστροφή", "החזר", "استرداد", "بازپرداخت", "واپسی", "возврат", "hoàn tiền", "hoan tien",
+)
+PHRASES = (
+    ("money", "back"), ("on", "hold"), ("not", "paid"), ("not", "completed"), ("not", "received"), ("not", "yet", "received"),
+    ("was", "not", "received"), ("did", "not", "go", "through"), ("didn", "t", "go", "through"), ("wasn", "t", "received"),
+    ("could", "not", "be", "processed"), ("payment", "failed"), ("insufficient", "funds"), ("credit", "reversal"),
+)
 # "credit" alone is everywhere in bank text; only these follow-ups make it a credit note.
 _CREDIT_NOTE = {"note", "notes", "memo", "nota"}
 
@@ -177,23 +217,49 @@ def field_texts(description: str, payer: str) -> list[str]:
     return [f"{description or ''} {payer or ''}"]
 
 
+def strip_client_name(text: str, client: str) -> str:
+    """Remove the client's own name from the text, so that a client called "Pending Ventures" or "Chargebacks911"
+    does not block its own payments."""
+    t = _nfkc(text)
+    if not client:
+        return t
+    names = {_nfkc(client).strip()}
+    words = _nfkc(client).split()
+    while len(words) > 1 and words[-1].casefold().strip(".,") in SUFFIX_CLASS:
+        words.pop()
+        names.add(" ".join(words))
+    for name in sorted((n for n in names if n), key=len, reverse=True):
+        t = re.sub(re.escape(name), " ", t, flags=re.I)
+    return t
+
+
 def has_negative_context(text: str) -> bool:
-    """Refund, reversal, failure or not-received wording (English plus the common payment languages)."""
-    t = _nfkc(text).casefold()
+    """Refund, reversal, failure or non-receipt wording (English plus the common payment languages)."""
+    # cached per text; the key holds the identity of the word lists so that swapping a list (tests do) never reuses a stale answer
+    return _negative(text, id(NEGATIVE_WORDS), id(LONG_STEMS), id(SUBSTRINGS), id(PHRASES), id(_CREDIT_NOTE))
+
+
+@lru_cache(maxsize=131072)
+def _negative(text: str, *_lists) -> bool:
+    t = _nfkc(text).casefold().replace("\u2019", "'")
     if not t:
         return False
-    if any(s in t for s in CJK_SUBSTRINGS):
+    if any(sub in t for sub in SUBSTRINGS):
         return True
+    t = t.replace("n't", " not")
     words = [m.group() for m in _WORD.finditer(t)]
-    stems = tuple(REFUND_STEMS) + tuple(FAILURE_STEMS)
-    for i, w in enumerate(words):
-        if stems and w.startswith(stems):
+    wordset = set(words)
+    if wordset & NEGATIVE_WORDS:
+        return True
+    if any(stem in t for stem in LONG_STEMS):
+        return True
+    for phrase in PHRASES:
+        if phrase[0] not in wordset:
+            continue
+        n = len(phrase)
+        if any(tuple(words[i:i + n]) == phrase for i in range(len(words) - n + 1)):
             return True
-        if w == "credit" and i + 1 < len(words) and words[i + 1] in _CREDIT_NOTE:
-            return True
-        if w == "not" and "received" in words[i + 1:i + 3]:
-            return True
-    return False
+    return any(w == "credit" and i + 1 < len(words) and words[i + 1] in _CREDIT_NOTE for i, w in enumerate(words))
 
 
 # ---------------------------------------------------------------- company names

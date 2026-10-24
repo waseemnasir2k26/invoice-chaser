@@ -124,14 +124,18 @@ def name_with_failure_words():
 
 # ---------------------------------------------------------------- one pass over everything
 
+LOG = []
+
 @lru_cache(maxsize=1)
 def run_all():
     """Executes every scenario. Returns (executed, strong_suggestions_that_should_not_exist, status_counter)."""
     executed, bad, seen = 0, [], Counter()
+    LOG.clear()
 
     def check(label, statuses, must_not=None):
         nonlocal executed
         executed += 1
+        LOG.append(label)   # every executed scenario leaves a trace: the count below is measured, not computed
         seen.update(statuses.values())
         hit = [i for i, s in statuses.items() if s in STRONG and (must_not is None or i in must_not)]
         if hit:
@@ -218,6 +222,14 @@ def test_real_references_are_still_recognised(x, text):
                                           ("Smith, John", "John Smith")])
 def test_real_payers_are_still_recognised(client, payer):
     assert _one("INV-9", client, payer, "") == "suggested_paid"
+
+
+def test_the_executed_count_is_measured_not_computed():
+    executed = run_all()[0]
+    assert executed == len(LOG) + len(HAND_CASES)
+    assert len(LOG) > 3000 and len(HAND_CASES) >= 30
+    kinds = Counter(label[0] for label in LOG)
+    assert {"id", "multi", "payer", "description", "future-id", "glued", "settled-peer"} <= set(kinds)
 
 
 def test_readme_states_adversarial_count():

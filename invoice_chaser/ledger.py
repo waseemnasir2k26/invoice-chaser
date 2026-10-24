@@ -19,15 +19,20 @@ A legacy flat file ({"INV-1": [...]}) is still read as the "sent" section.
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import os
+import re
+import time
+import uuid
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 from .ladder import STAGES
 
-_SECTIONS = ("sent", "paid", "received", "rejected")
+_SECTIONS = ("sent", "paid", "received", "rejected", "dropped")
 
 
 def _read(path: str | Path) -> dict:
@@ -51,19 +56,69 @@ def _read(path: str | Path) -> dict:
         for e in list(out["paid"].values()) + list(out["received"].values()):
             date.fromisoformat(e["date"])
         for e in out["received"].values():
-            Decimal(e["amount"])
+            amount = Decimal(e["amount"])
+            if not amount.is_finite() or amount < 0 or amount >= Decimal("1e12"):
+                raise ValueError(f"received amount {e['amount']!r} must be a finite, non-negative number")
         for e in out["rejected"].values():
             if not isinstance(e, list):
                 raise ValueError("rejected entries must be lists")
+        if not isinstance(out["dropped"], dict):
+            raise ValueError("dropped must be an object")
     except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError) as exc:
-        raise ValueError(f"{p}: not a valid sent ledger ({exc})") from exc
+        raise ValueError(f"{p.name}: not a valid sent ledger ({exc})") from exc
     return out
 
 
+@contextlib.contextmanager
+def _locked(path: str | Path, timeout: float = 30.0):
+    """An exclusive lock on <ledger>.lock (msvcrt on Windows, fcntl elsewhere), held for a whole read-modify-write,
+    so parallel `mark-sent` / `confirm` runs cannot lose each other's entries."""
+    lock = Path(str(path) + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock, "a+b")
+    deadline = time.monotonic() + timeout
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise ValueError(f"could not lock {lock.name} (another invoice-chaser is writing the ledger)") from None
+                    time.sleep(0.02)
+        else:
+            import fcntl
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise ValueError(f"could not lock {lock.name} (another invoice-chaser is writing the ledger)") from None
+                    time.sleep(0.02)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
 def _write(path: str | Path, data: dict) -> None:
+    """Atomic: write a uniquely named temp file next to the ledger, then replace. Call inside _locked()."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, p)
 
@@ -85,54 +140,100 @@ def load_rejected(path: str | Path) -> dict[str, list[str]]:
     return _read(path)["rejected"]
 
 
+def load_dropped(path: str | Path) -> dict[str, list[str]]:
+    return _read(path)["dropped"]
+
+
+# Before 1.1.1 a payment without a transaction id was keyed by its ROW NUMBER in the export (wise:wise-3).
+# Row numbers move when you export again, so such a key could land on a different client's payment.
+_ROW_KEY = re.compile(r"^(wise|payoneer|bank):(wise|payoneer|bank)-\d+$")
+
+
+def migrate_row_keys(path: str | Path) -> list[str]:
+    """Drop ledger entries keyed by a row number. Returns one message per dropped key (also kept in the
+    ledger's "dropped" section, so review.html keeps showing them). A confirmed invoice stays confirmed;
+    only the row-keyed payment reference goes."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    with _locked(path):
+        data = _read(path)
+        messages = []
+        for inv, entry in list(data["paid"].items()) + list(data["received"].items()):
+            bad = [k for k in entry.get("payments", []) if _ROW_KEY.match(k)]
+            for k in bad:
+                entry["payments"].remove(k)
+                data["dropped"].setdefault(inv, []).append(k)
+                messages.append(f"{inv}: dropped payment reference {k} from your confirmation (row-numbered ids are not stable)")
+        for inv, keys in list(data["rejected"].items()):
+            bad = [k for k in keys if _ROW_KEY.match(k)]
+            for k in bad:
+                keys.remove(k)
+                data["dropped"].setdefault(inv, []).append(k)
+                messages.append(f"{inv}: your rejection of {k} was dropped (row-numbered ids are not stable): "
+                                f"if that payment is suggested again, reject it again")
+            if not keys:
+                del data["rejected"][inv]
+        if messages:
+            _write(path, data)
+        return messages
+
+
 def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> None:
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {', '.join(STAGES)}")
-    data = _read(path)
-    entries = data["sent"].setdefault(invoice_id, [])
-    entry = {"stage": stage, "date": when.isoformat()}
-    if entry not in entries:
-        entries.append(entry)
-    _write(path, data)
+    with _locked(path):
+        data = _read(path)
+        entries = data["sent"].setdefault(invoice_id, [])
+        entry = {"stage": stage, "date": when.isoformat()}
+        if entry not in entries:
+            entries.append(entry)
+        _write(path, data)
 
 
 def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "", snapshot: dict | None = None,
                 payments=(), source: str = "mark-paid") -> None:
-    data = _read(path)
-    data["paid"][invoice_id] = {"date": when.isoformat(), "note": note, "source": source,
-                                "payments": list(payments), "snapshot": snapshot or {}}
-    data["received"].pop(invoice_id, None)  # fully paid now
-    _write(path, data)
+    with _locked(path):
+        data = _read(path)
+        data["paid"][invoice_id] = {"date": when.isoformat(), "note": note, "source": source,
+                                    "payments": list(payments), "snapshot": snapshot or {}}
+        data["received"].pop(invoice_id, None)  # fully paid now
+        _write(path, data)
 
 
 def record_received(path: str | Path, invoice_id: str, when: date, amount: Decimal, payments=(),
                     snapshot: dict | None = None) -> None:
-    data = _read(path)
-    data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
-                                    "snapshot": snapshot or {}}
-    _write(path, data)
+    if not Decimal(amount).is_finite() or Decimal(amount) < 0:
+        raise ValueError(f"received amount {amount!r} must be a finite, non-negative number")
+    with _locked(path):
+        data = _read(path)
+        data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
+                                        "snapshot": snapshot or {}}
+        _write(path, data)
 
 
 def record_rejected(path: str | Path, invoice_id: str, payment_id: str) -> None:
-    data = _read(path)
-    ids = data["rejected"].setdefault(invoice_id, [])
-    if payment_id not in ids:
-        ids.append(payment_id)
-    _write(path, data)
+    with _locked(path):
+        data = _read(path)
+        ids = data["rejected"].setdefault(invoice_id, [])
+        if payment_id not in ids:
+            ids.append(payment_id)
+        _write(path, data)
 
 
 def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
     """Remove a confirmation (paid or part-payment). Returns False if there was none."""
-    data = _read(path)
-    want = invoice_id.strip().lower()
-    hit = False
-    for section in ("paid", "received"):
-        for k in [k for k in data[section] if str(k).strip().lower() == want]:
-            del data[section][k]
-            hit = True
-    if hit:
-        _write(path, data)
-    return hit
+    with _locked(path):
+        data = _read(path)
+        want = invoice_id.strip().lower()
+        hit = False
+        for section in ("paid", "received"):
+            for k in [k for k in data[section] if str(k).strip().lower() == want]:
+                del data[section][k]
+                hit = True
+        if hit:
+            _write(path, data)
+        return hit
 
 
 def ci(mapping: dict) -> dict:
