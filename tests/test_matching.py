@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from conftest import inv, pay
 
-from invoice_chaser.matching import match_all, name_similarity, ref_hit
+from invoice_chaser.matching import match_all, match_all_ex, name_similarity, ref_hit
 
 TODAY = date(2026, 10, 25)
 
@@ -88,12 +88,15 @@ def test_fuzzy_name(cfg):
     assert r.status in ("paid", "needs_review")  # strong fuzzy + exact amount
 
 
-def test_payment_before_issue_or_outside_window_ignored(cfg):
-    (r,), _ = one([inv()], [pay(d=date(2026, 8, 1), desc="INV-1")], cfg)
-    assert r.status == "overdue"
+def test_payment_outside_date_window_is_never_dropped_silently(cfg):
+    # dated before the invoice: held for review (day/month mix-up), reported, never "paid" and never chased
+    (r,), _, early = match_all_ex([inv()], [pay(d=date(2026, 8, 1), desc="INV-1")], TODAY, cfg)
+    assert r.status == "needs_review" and r.stage is None
+    assert len(early) == 1 and "before the invoice was issued" in early[0].problem
+    assert "before the invoice was issued" in r.why_not_paid
     cfg.date_window_days = 10
-    (r,), _ = one([inv()], [pay(d=date(2026, 10, 20), desc="INV-1")], cfg)
-    assert r.status == "overdue"
+    (r,), _, early = match_all_ex([inv()], [pay(d=date(2026, 10, 20), desc="INV-1")], TODAY, cfg)
+    assert r.status == "needs_review" and "after the invoice" in early[0].problem
 
 
 def test_one_payment_not_double_counted(cfg):

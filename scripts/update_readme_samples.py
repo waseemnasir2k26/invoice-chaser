@@ -35,7 +35,7 @@ def build_samples() -> dict[str, str]:
         os.chdir(tmp)
         try:
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["demo", "--out", "out"]) == 0
             msg = message_from_bytes((Path(tmp) / "out" / "drafts" / "INV-1002-final.eml").read_bytes(), policy=policy.default)
             head = "".join(f"{k}: {msg[k]}\n" for k in ("To", "From", "Subject", "X-Unsent"))

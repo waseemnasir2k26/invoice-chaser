@@ -7,12 +7,19 @@ Fixes from the first review round.
 - `pip install .` then `invoice-chaser demo` works from any folder: demo data now ships inside the package.
 - Reminder templates no longer assert history the tool cannot know. Drafts say nothing about earlier reminders or paused work unless you unlock it: `sent.json` ledger, a `last_reminder` column, `previous_reminders: true`, and `pause_work_on_final: true`. New `reply_within_days` setting.
 - New `invoice-chaser mark-sent <invoice> [--stage] [--date]` and `sent.json` ledger: a sent stage is never drafted twice, and follow-ups cite the date of your last reminder.
-- Matching is indexed (amount band, invoice-id token, name prefix) instead of all-pairs: 1,000 invoices x 5,000 payments in about 2 s (was minutes). The fuzzy name check now needs a shared 4-letter word prefix.
+- **A different company is never marked paid.** A payment is counted as paid only if the invoice id is in its text, or the amount is exact and the payer IS the client (same words once Ltd/LLC/Inc/GmbH/Pvt/Co are ignored; whole words, so "Acme" is not "Acme Holdings"). Everything else is "needs review", with a *why not paid* column in `status.csv` and `review.html` and a copy-paste `invoice-chaser mark-paid INV-x` command. 22 false-paid test cases.
+- Duplicate rows cannot settle two invoices: the same transfer id twice in one export is dropped with a warning; the same payment in two different exports is flagged and held for review.
+- Payments dated before an invoice (or far after it) are no longer dropped silently: they are listed in `review.html` and the invoice is held, not chased. New `--date-format dmy|mdy|ymd`; a warning when every date in a file is ambiguous.
+- Currencies are normalised (`usd `, `€`, `£`); a bare `$` needs `default_currency` in the config; non-ISO strings warn. Negative rows (refunds, fees) are warned about and listed. UTF-8 BOM, UTF-16 and Windows-1252 CSVs and BOM'd JSON files are read.
+- New `invoice-chaser mark-paid`. `mark-sent` and `mark-paid` match ids ignoring case, refuse unknown ids and a missing `status.csv` unless `--force`, and refuse future dates.
+- A bad CSV row is skipped with a warning (listed in `review.html`) instead of aborting the run; `--strict` aborts.
+- Matching is indexed (exact amount, invoice-id token, payer equal to the client inside the date window) instead of all-pairs. Measured cold on one Windows 11 laptop (Intel 13th-gen-class CPU, 24 logical cores, Python 3.11.9, single thread, synthetic data): 1,000 invoices x 5,000 payments in 0.4 s, 3,000 x 15,000 in 1.4 s, 6,000 x 30,000 in 2.2 s (was 29 s for 3,000 x 15,000). Trade-off: a lower payment with no invoice id and a fuzzy-only payer name is no longer found.
 - Quoted multi-line CSV fields are read correctly.
 - Missing or invalid client emails produce no draft, a `draft_status` column, a warning, and a banner in `review.html`. A missing `sender_email` warns loudly.
 - Config is range-checked with clear errors (tolerance 0-20, thresholds 0-1, `fx_rates` must be numeric); arithmetic errors exit with code 2 instead of a traceback.
-- Drafts folder: only files listed in the previous `drafts.json` are removed; other files are never touched or overwritten.
-- `--llm`: first name restricted to letters, spaces and hyphens (max 40), other fields stripped of control characters; one-line notice when no key is found.
+- Your edits are safe: `drafts.json` stores a sha256 per draft. A draft you edited is never deleted or overwritten (the new one is written as `<name>.new.eml` with a warning), and files the tool did not write are never touched.
+- `--llm`: first name restricted to letters only, at most 3 words and 30 characters; other fields stripped of control characters; one-line notice when no key is found.
+- The demo config leaves `pause_work_on_final` off, so the README samples show the defaults.
 - README: screenshot, cross-platform quickstart, sample blocks generated from real output (`scripts/update_readme_samples.py`, checked by a test).
 
 ## 1.0.0 - 2026-10-25

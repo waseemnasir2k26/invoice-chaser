@@ -8,6 +8,6 @@
   "stage_days": [1, 7, 14, 30],
   "fx_rates": {},
   "previous_reminders": false,
-  "pause_work_on_final": true,
+  "pause_work_on_final": false,
   "reply_within_days": 7
 }

@@ -1,10 +1,15 @@
-"""sent.json: a record of reminders you actually sent.
+"""sent.json: a record of what YOU did outside the tool.
 
-The tool never sends. After you send a draft yourself, run
-`invoice-chaser mark-sent <invoice-id>` so the next run does not draft the
-same stage again and can word the next reminder as a follow-up.
+The tool never sends and never decides "paid" on a shaky match. Two things are recorded here:
 
-Format: {"INV-1001": [{"stage": "nudge", "date": "2026-10-08"}, ...]}
+  sent  reminders you actually sent (`invoice-chaser mark-sent INV-1`): the same stage is
+        never drafted twice, and the next draft can say "following my reminder of <date>".
+  paid  invoices you confirmed as paid (`invoice-chaser mark-paid INV-1`), e.g. after
+        reviewing a "needs review" row.
+
+Format: {"sent": {"INV-1": [{"stage": "nudge", "date": "2026-10-08"}]},
+         "paid": {"INV-2": {"date": "2026-10-20", "note": "..."}}}
+A legacy flat file ({"INV-1": [...]}) is still read as the "sent" section.
 """
 from __future__ import annotations
 
@@ -16,37 +21,68 @@ from pathlib import Path
 from .ladder import STAGES
 
 
-def load_ledger(path: str | Path) -> dict[str, list[dict]]:
+def _read(path: str | Path) -> dict:
     p = Path(path)
     if not p.exists():
-        return {}
+        return {"sent": {}, "paid": {}}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             raise ValueError("not an object")
-        for inv, entries in data.items():
+        if "sent" not in data and "paid" not in data:  # legacy flat format
+            data = {"sent": data, "paid": {}}
+        sent, paid = data.get("sent", {}), data.get("paid", {})
+        if not isinstance(sent, dict) or not isinstance(paid, dict):
+            raise ValueError("'sent' and 'paid' must be objects")
+        for entries in sent.values():
             for e in entries:
                 if e["stage"] not in STAGES:
                     raise ValueError(f"unknown stage {e['stage']!r}")
                 date.fromisoformat(e["date"])
-    except (ValueError, KeyError, TypeError) as exc:
+        for e in paid.values():
+            date.fromisoformat(e["date"])
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError(f"{p}: not a valid sent ledger ({exc})") from exc
-    return data
+    return {"sent": sent, "paid": paid}
+
+
+def _write(path: str | Path, data: dict) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def load_ledger(path: str | Path) -> dict[str, list[dict]]:
+    """The 'sent' section: invoice id -> [{stage, date}]."""
+    return _read(path)["sent"]
+
+
+def load_paid(path: str | Path) -> dict[str, dict]:
+    return _read(path)["paid"]
 
 
 def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> None:
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {', '.join(STAGES)}")
-    p = Path(path)
-    data = load_ledger(p)
-    entries = data.setdefault(invoice_id, [])
+    data = _read(path)
+    entries = data["sent"].setdefault(invoice_id, [])
     entry = {"stage": stage, "date": when.isoformat()}
     if entry not in entries:
         entries.append(entry)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, p)
+    _write(path, data)
+
+
+def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "") -> None:
+    data = _read(path)
+    data["paid"][invoice_id] = {"date": when.isoformat(), "note": note}
+    _write(path, data)
+
+
+def ci(mapping: dict) -> dict:
+    """Case-insensitive view of a ledger section (ids are matched ignoring case and spaces)."""
+    return {str(k).strip().lower(): v for k, v in mapping.items()}
 
 
 def highest_sent(entries: list[dict] | None) -> tuple[int, str, str] | None:

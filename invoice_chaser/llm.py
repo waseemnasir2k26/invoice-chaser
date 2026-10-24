@@ -28,10 +28,11 @@ def _clean_output(text: str) -> str | None:
 
 
 def clean_first_name(s: str) -> str:
-    """Letters, spaces and hyphens only, max 40 chars. Anything else (control characters,
-    quotes, punctuation, digits) is dropped so CSV data cannot steer the prompt."""
-    kept = "".join(ch for ch in str(s) if ch.isalpha() or ch in " -")
-    return " ".join(kept.split())[:40].strip() or "there"
+    """Letters only, at most 3 words, max 30 characters. Anything else (control characters,
+    quotes, punctuation, digits, hyphens) becomes a word break or is dropped, so CSV data
+    cannot steer the prompt."""
+    words = "".join(ch if ch.isalpha() else " " for ch in str(s)).split()[:3]
+    return " ".join(words)[:30].strip() or "there"
 
 
 def _clean(text: str, allowed: str, limit: int) -> str:

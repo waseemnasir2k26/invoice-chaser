@@ -23,6 +23,7 @@ class Config:
     previous_reminders: bool = False  # True: wording may say "following my earlier reminder"
     pause_work_on_final: bool = False  # True: final/escalation drafts include the pause-work sentence
     reply_within_days: int = 7  # deadline wording in final/escalation drafts
+    default_currency: str = ""  # what a bare "$" in your files means, e.g. "USD"
 
 
 def _num(name: str, v, lo: float, hi: float, integer: bool = False) -> None:
@@ -50,6 +51,9 @@ def validate(cfg: Config) -> Config:
     for name in ("previous_reminders", "pause_work_on_final"):
         if not isinstance(getattr(cfg, name), bool):
             raise ValueError(f"config {name} must be true or false")
+    if not isinstance(cfg.default_currency, str) or (cfg.default_currency and not re.fullmatch(r"[A-Za-z]{3}", cfg.default_currency)):
+        raise ValueError("config default_currency must be a 3-letter code like USD")
+    cfg.default_currency = cfg.default_currency.upper()
     for name in ("sender_name", "sender_email", "payment_details"):
         if not isinstance(getattr(cfg, name), str):
             raise ValueError(f"config {name} must be text")
@@ -77,7 +81,7 @@ def load_config(path: str | Path | None) -> Config:
     cfg = Config()
     if not path:
         return validate(cfg)
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError("config file must be a JSON object")
     known = {f.name for f in fields(Config)}

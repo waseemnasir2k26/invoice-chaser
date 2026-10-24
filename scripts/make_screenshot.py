@@ -19,9 +19,10 @@ def main() -> int:
     from playwright.sync_api import sync_playwright
 
     with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run([sys.executable, "-m", "invoice_chaser", "demo", "--out", tmp], check=True,
-                       stdout=subprocess.DEVNULL, cwd=ROOT)
-        html = Path(tmp) / "review.html"
+        # run from the temp folder with the default --out so the page shows the same commands a user sees
+        subprocess.run([sys.executable, "-m", "invoice_chaser", "demo"], check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, cwd=tmp, env={**os.environ, "PYTHONPATH": str(ROOT)})
+        html = Path(tmp) / "out" / "review.html"
         dest = ROOT / "docs" / "review.png"
         dest.parent.mkdir(exist_ok=True)
         with sync_playwright() as pw:

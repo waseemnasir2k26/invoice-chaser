@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from decimal import Decimal
 from html import escape
 from pathlib import Path
@@ -12,7 +13,7 @@ STATUS_ORDER = [("needs_review", "Needs review"), ("overdue", "Overdue"), ("part
                 ("open", "Open, not yet due"), ("paid", "Paid"), ("void", "Void")]
 
 CSV_FIELDS = ["invoice_id", "client", "email", "currency", "amount", "paid", "outstanding", "due",
-              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "draft_status", "draft_file", "last_reminder"]
+              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "draft_status", "draft_file", "last_reminder"]
 
 
 def _csv_safe(v) -> str:
@@ -37,7 +38,7 @@ def write_status_csv(results: list[InvoiceResult], drafts: dict[str, str], path:
             w.writerow([_csv_safe(x) for x in [
                 i.id, i.client, i.email, i.currency, i.amount, r.paid, r.outstanding, i.due.isoformat(),
                 r.status, r.days_overdue, r.stage or "", f"{r.confidence:.2f}",
-                ";".join(m.payment_id for m in r.matches), _reason(r), r.draft_status, drafts.get(i.id, ""),
+                ";".join(m.payment_id for m in r.matches), _reason(r), r.why_not_paid, r.draft_status, drafts.get(i.id, ""),
                 r.last_reminder.isoformat() if r.last_reminder else ""]])
 
 
@@ -77,11 +78,22 @@ th{color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;padding:1px 8px;border-radius:99px;border:1px solid var(--line);font-size:12px}
 .small{color:var(--mut);font-size:12px}
+.cmd{user-select:all;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:12px}
 .warn{background:var(--card);border:1px solid #b45309;border-left-width:4px;border-radius:8px;padding:10px 14px;margin:0 0 16px}
 """
 
 
-def _rows(results: list[InvoiceResult], drafts: dict[str, str]) -> str:
+def _markpaid(invoice_id: str, out_hint: str) -> str:
+    out = f' --out "{out_hint}"' if (" " in out_hint) else (f" --out {out_hint}" if out_hint != "out" else "")
+    return ("<div>If you checked and it is paid, run: "
+            f"<code class=cmd>invoice-chaser mark-paid {e(shlex_quote(invoice_id))}{e(out)}</code></div>")
+
+
+def shlex_quote(s: str) -> str:
+    return s if re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", s) else "'" + s.replace("'", "'\''") + "'"
+
+
+def _rows(results: list[InvoiceResult], drafts: dict[str, str], out_hint: str = "out") -> str:
     out = []
     for r in results:
         i = r.invoice
@@ -92,12 +104,15 @@ def _rows(results: list[InvoiceResult], drafts: dict[str, str]) -> str:
             f"<td>{e(i.due.isoformat())}</td><td class=n>{e(r.days_overdue)}</td>"
             f"<td>{e(r.stage or '')}{'<div class=small>' + e(drafts[i.id]) + '</div>' if i.id in drafts else ''}"
             f"{'<div class=small>' + e(r.draft_status) + '</div>' if r.draft_status and i.id not in drafts else ''}</td>"
-            f"<td class=n>{e(f'{r.confidence:.2f}')}</td><td class=small>{e(_reason(r))}</td></tr>")
+            f"<td class=n>{e(f'{r.confidence:.2f}')}</td><td class=small>{e(_reason(r))}"
+            f"{'<div><strong>Why not paid:</strong> ' + e(r.why_not_paid) + '</div>' if r.why_not_paid and r.status != 'open' else ''}"
+            f"{_markpaid(i.id, out_hint) if r.status == 'needs_review' else ''}</td></tr>")
     return "".join(out)
 
 
 def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Decimal]],
-                drafts: dict[str, str], today, warnings: list[str] | None = None) -> str:
+                drafts: dict[str, str], today, warnings: list[str] | None = None,
+                early=None, ignored: list[Payment] | None = None, out_hint: str = "out") -> str:
     parts = [f"<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"<meta name=viewport content='width=device-width,initial-scale=1'>"
              f"<title>Invoice review {e(today.isoformat())}</title><style>{CSS}</style></head><body><main>"
@@ -119,13 +134,36 @@ def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Dec
         rs = [r for r in results if r.status == key]
         if not rs:
             continue
-        parts.append(f"<h2>{e(label)} ({len(rs)})</h2><div class=wrap><table>{head}{_rows(rs, drafts)}</table></div>")
+        parts.append(f"<h2>{e(label)} ({len(rs)})</h2><div class=wrap><table>{head}{_rows(rs, drafts, out_hint)}</table></div>")
     if leftovers:
         parts.append("<h2>Payments not fully matched</h2><div class=wrap><table><tr><th>Payment</th><th>Date</th>"
                      "<th>Remaining</th><th>Payer</th><th>Description</th></tr>")
         for p, rem in leftovers:
             parts.append(f"<tr><td>{e(p.id)}</td><td>{e(p.date.isoformat())}</td><td class=n>{e(f'{rem:,.2f}')} {e(p.currency)}</td>"
                          f"<td>{e(p.payer)}</td><td>{e(p.description)}</td></tr>")
+        parts.append("</table></div>")
+    if early:
+        parts.append("<h2>Payments outside the invoice date window (check date format)</h2><p class=small>These look like "
+                     "payments for an invoice but are dated before it was issued or far after. A day/month mix-up is the usual "
+                     "cause. The invoices involved are held in needs review; no reminder is drafted for them.</p>"
+                     "<div class=wrap><table><tr><th>Payment</th><th>Date</th><th>Amount</th><th>Possible invoice</th>"
+                     "<th>Conf.</th><th>Problem</th></tr>")
+        for x in early:
+            p = x.payment
+            parts.append(f"<tr><td>{e(p.id)}</td><td>{e(p.date.isoformat())}</td><td class=n>{e(f'{p.amount:,.2f}')} {e(p.currency)}</td>"
+                         f"<td>{e(x.invoice.id)} ({e(x.invoice.client)})</td><td class=n>{e(f'{x.confidence:.2f}')}</td>"
+                         f"<td class=small>{e(x.problem)}</td></tr>")
+        parts.append("</table></div>")
+    if ignored:
+        shown = ignored[:50]
+        parts.append(f"<h2>Negative rows ignored ({len(ignored)})</h2><p class=small>Refunds, fees and withdrawals. "
+                     "They are not netted against any invoice.</p><div class=wrap><table><tr><th>Source</th><th>Date</th>"
+                     "<th>Amount</th><th>Description</th></tr>")
+        for p in shown:
+            parts.append(f"<tr><td class=small>{e(p.source)}</td><td>{e(p.date.isoformat())}</td>"
+                         f"<td class=n>{e(f'{p.amount:,.2f}')} {e(p.currency)}</td><td>{e(p.description or p.payer)}</td></tr>")
+        if len(ignored) > len(shown):
+            parts.append(f"<tr><td colspan=4 class=small>and {len(ignored) - len(shown)} more</td></tr>")
         parts.append("</table></div>")
     parts.append("</main></body></html>")
     return "".join(parts)

@@ -5,6 +5,7 @@ import pytest
 
 from invoice_chaser.parsers import (
     ParseError,
+    ParseOptions,
     parse_amount,
     parse_date,
     parse_generic,
@@ -83,8 +84,11 @@ def test_invoices_sample_and_errors(examples, tmp_path):
     dup = tmp_path / "d.csv"
     dup.write_text("id,client,email,amount,currency,issued,due\nA,x,,1,USD,2026-01-01,2026-02-01\nA,y,,1,USD,2026-01-01,2026-02-01\n")
     with pytest.raises(ParseError, match="duplicate"):
-        read_invoices(dup)
+        read_invoices(dup, ParseOptions(strict=True))
+    opts = ParseOptions()  # default: skip the bad row, keep going, say so
+    assert len(read_invoices(dup, opts)) == 1 and "duplicate" in opts.warnings[0] and "row skipped" in opts.warnings[0]
     bad = tmp_path / "b.csv"
     bad.write_text("id,client,email,amount,currency,issued,due\nA,x,,abc,USD,2026-01-01,2026-02-01\n")
     with pytest.raises(ParseError, match="row 2"):
-        read_invoices(bad)
+        read_invoices(bad, ParseOptions(strict=True))
+    assert read_invoices(bad) == []

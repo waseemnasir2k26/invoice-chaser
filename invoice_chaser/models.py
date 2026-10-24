@@ -28,6 +28,7 @@ class Payment:
     description: str
     payer: str
     source: str
+    suspect: str = ""  # set when this row may duplicate another: never auto-matched
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Match:
     confidence: float
     reason: str
     allocated: Decimal = Decimal(0)
+    blocker: str = ""  # why this was not counted as paid
 
 
 @dataclass
@@ -55,3 +57,4 @@ class InvoiceResult:
     note: str = ""
     draft_status: str = ""
     last_reminder: date | None = None
+    why_not_paid: str = ""
