@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.17  as of 2026-10-25
+invoice-chaser 1.1.18  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -151,7 +151,7 @@ Everything else is **needs review**: no suggestion to confirm, no reminder draft
 
 Confidence (0 to 1) is only for ordering and display. Partial payments add up: confirm 1,000 against a 2,500 invoice and the next run chases the remaining 1,500; when the rest arrives it is suggested against what is left.
 
-Currencies are read as ISO codes (`usd ` becomes `USD`, `€` EUR, `£` GBP). A bare `$` is not guessed: set `default_currency` in the config, otherwise you get a warning and those rows match nothing. Negative rows (refunds, fees, withdrawals) are ignored with a warning and listed in `review.html`; they are not netted against invoices.
+Currencies are read as ISO codes (`usd ` becomes `USD`, `€` EUR, `£` GBP). A bare `$` is not guessed: set `default_currency` in the config, otherwise you get a warning and those rows match nothing. Negative rows (refunds, fees, withdrawals) are ignored with a warning and listed in `review.html`; they are not netted against invoices. Each refund row is also named in a `REFUND_SEEN` warning in the terminal (1.1.18).
 
 **Amounts are read strictly.** Sign or (parentheses), an optional currency symbol or code, then digits with one consistent thousands separator (comma, dot, space or apostrophe, always groups of three) and at most one decimal mark. `1,234.56`, `1.234,56`, `12,50`, `USD 1 234,50` are read exactly. Forms that could mean two things (`1,234` is 1234 or 1.234; `1.500` is 1500 or 1.5) and anything malformed (`1e400`, `1000 (2 of 3)`, `1,23,456`) skip that row with the reason, instead of guessing. Say which you mean with `decimal_comma` in the config (`true` for 1.234,56 style, `false` for 1,234.56) or `--decimal-comma`; it applies to the invoice, Payoneer and bank files, while Wise statements always use a decimal point.
 

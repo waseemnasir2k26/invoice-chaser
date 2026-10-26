@@ -389,6 +389,10 @@ def _finish(path, rows_seen: int, out: list[Payment], opts: ParseOptions, skippe
     if neg:
         opts.warn(f"{Path(path).name}: {len(neg)} negative row(s) ignored (refunds, fees, withdrawals); they are NOT netted "
                   f"against invoices. Listed in review.html.", "NEGATIVE_ROWS")
+        # 1.1.18: each refund row is named here, so a refund that may cancel a payment is visible in the terminal, not only in review.html
+        rows = "; ".join(f"{p.id} {p.date.isoformat()} {p.amount} {p.currency} payer {p.payer or 'none'} text {p.description or 'none'}"
+                         for p in neg)
+        opts.warn(f"{Path(path).name}: refund row(s) NOT counted (a refund can cancel a payment you received): {rows}", "REFUND_SEEN")
     if skipped_status:
         opts.warn(f"{Path(path).name}: {skipped_status} row(s) skipped because their status is not completed (pending, failed...).", "ROWS_SKIPPED_STATUS")
     return out

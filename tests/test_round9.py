@@ -237,7 +237,7 @@ def test_warnings_become_one_summary_with_counts(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err
     assert "CRITICAL [INVOICE_ROW_DROPPED]: i.csv line 3 (invoice id 'BAD')" in err            # a dropped invoice is never "routine"
-    assert "Summary: 2 critical (INVOICE_ROW_DROPPED x1, NO_SENDER x1), 1 warning (DATE_AMBIGUOUS x1)" in err and "1 routine (NEGATIVE_ROWS x1)" in err
+    assert "Summary: 2 critical (INVOICE_ROW_DROPPED x1, NO_SENDER x1), 2 warning (DATE_AMBIGUOUS x1, REFUND_SEEN x1)" in err and "1 routine (NEGATIVE_ROWS x1)" in err
     assert "negative row(s) ignored" not in err                                            # routine: counted, not spelled out
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     assert "negative row(s) ignored" in html and "INVOICE_ROW_DROPPED" in html

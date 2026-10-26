@@ -165,6 +165,27 @@ def _info_for(p: Payment, index: IdIndex) -> _Info:
     return _Info(f"{p.description} | {p.payer}", frozenset(ids), frozenset(foreign), neg, texts if neg else ())
 
 
+def client_named(client: str, p: Payment) -> bool:
+    """1.1.18: the ONE test that a payment names the client: same company as the payer, or the client's name as whole words in the
+    payer or the description. Every hold that asks whether the client is named uses this, so the reason can never disagree with it."""
+    if same_company(client, p.payer):
+        return True
+    c = norm_name(client)
+    return bool(c) and any(f" {c} " in f" {norm_name(t)} " for t in (p.description, p.payer) if t)
+
+
+def hold_reason(named: bool, near_amount: bool, other_currency: bool = False) -> str:
+    """1.1.18: the ONE reason text for an unidentified payment that holds an open invoice. It states only what was detected
+    (the client name matched, the amount is near); it never asserts that something present is absent."""
+    bits = []
+    if other_currency:
+        bits.append("payment in another currency")
+    if near_amount:
+        bits.append("amount near the invoice")
+    bits.append("client name matched, no invoice id" if named else "no invoice id, no client name matched")
+    return "; ".join(bits)
+
+
 def _rate(pay_cur: str, inv_cur: str, rates: dict[str, str]) -> Decimal | None:
     if pay_cur == inv_cur:
         return Decimal(1)
@@ -252,6 +273,8 @@ def _score(ctx: _Inv, pay: Payment, info: _Info, cfg: Config, rate: Decimal) -> 
             parts.append("the payment names a different invoice (" + ", ".join(sorted(ids)) + ")")
         elif not ref and not info.foreign:
             parts.append("no invoice id in the payment")
+            if client_named(inv.client, pay):  # 1.1.18: say what was detected (the same test the holds use)
+                parts.append("client name matched")
             if not company:
                 parts.append(f"payer {pay.payer!r} is not exactly {inv.client!r} (same words and the same Ltd/Inc/LLC kind)"
                              if pay.payer else "the payment has no payer name")
@@ -533,10 +556,12 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
                 break
             p = payments[pi]
             cmd_inv, cmd_pay = quote(inv.id), quote(p.id)
+            named = client_named(inv.client, p)
+            detail = "its text names the client and no invoice id" if named else "it names no invoice id and no client"
             suggested[inv.id].append(Match(
-                inv.id, p.id, p.date, p.description, 0.0, "amount near the invoice; no invoice id or client name in the payment",
+                inv.id, p.id, p.date, p.description, 0.0, hold_reason(named, near_amount=True),
                 blocker=(f"NEAR_AMOUNT: payment {p.id} ({p.amount} {p.currency}, {p.date.isoformat()}, payer {p.payer or 'none'}) is within "
-                         f"{NEAR_PCT * 100:g}% (or {NEAR_ABS} units) of this invoice's {inv.amount:.2f} but names no invoice and no client. "
+                         f"{NEAR_PCT * 100:g}% (or {NEAR_ABS} units) of this invoice's {inv.amount:.2f} but {detail}. "
                          f"If it pays this invoice: invoice-chaser confirm {cmd_inv} --payment {cmd_pay}. "
                          f"If not: invoice-chaser reject {cmd_inv} {cmd_pay}"),
                 payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
@@ -552,16 +577,15 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         if inv.amount <= 0 or len(suggested[inv.id]) >= 2:
             continue
         span = max(inv.amount * NEAR_PCT, NEAR_ABS)
-        client = norm_name(inv.client)
         for pi in foreign_pool:
             p = payments[pi]
             if p.currency == inv.currency or len(suggested[inv.id]) >= 2:
                 continue
             if (inv.id.strip().lower(), f"{p.source}:{p.id}") in excluded:
                 continue
-            named = same_company(inv.client, p.payer) or (bool(client) and any(
-                f" {client} " in f" {norm_name(t)} " for t in (p.description, p.payer) if t))
-            if not named and abs(p.amount - inv.amount) > span:
+            named = client_named(inv.client, p)
+            near = abs(p.amount - inv.amount) <= span
+            if not named and not near:
                 continue
             cmd_inv, cmd_pay = quote(inv.id), quote(p.id)
             if named:
@@ -570,7 +594,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
                 what = (f"a payment of {p.currency} {p.amount} with no invoice id and no client name is close to this "
                         f"{inv.currency} invoice's {inv.amount:.2f}: check it")
             suggested[inv.id].append(Match(
-                inv.id, p.id, p.date, p.description, 0.0, "payment in another currency; no invoice id in the payment",
+                inv.id, p.id, p.date, p.description, 0.0, hold_reason(named, near, other_currency=True),
                 blocker=(f"CURRENCY_MISMATCH: {what}. If it pays this invoice: invoice-chaser confirm {cmd_inv} --payment {cmd_pay}. "
                          f"If not: invoice-chaser reject {cmd_inv} {cmd_pay}"),
                 payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,

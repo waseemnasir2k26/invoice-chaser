@@ -1,3 +1,11 @@
+## 1.1.18 - 2026-10-26
+
+Hold reasons say what was detected, and refund rows are named.
+
+- **One reason builder (blocker).** A held payment's reason is built by `matching.hold_reason` from one client-name test (`matching.client_named`). A same-currency payment from the client that falls in the NEAR_AMOUNT window used to read "no invoice id or client name in the payment" while its payer was the client. It now reads "amount near the invoice; client name matched, no invoice id", and its blocker says the text names the client. Strangers read "no client name matched". The CURRENCY_MISMATCH reason uses the same builder, and a scored candidate that names the client adds "client name matched".
+- **REFUND_SEEN notice.** Each file's negative rows are named in a `REFUND_SEEN` warning (id, date, amount, payer, text), so a refund that may cancel a payment is visible in the terminal. `NEGATIVE_ROWS` is unchanged; no matching or exit-code behaviour changed.
+- **Not in this release.** `confirm INV --payment ID` still records a review-kind (held) suggestion. The judge R10 request to refuse it needs a decision: held double-count, NEAR_AMOUNT, CURRENCY_MISMATCH and name-clash resolutions all use that path today.
+
 ## 1.1.17 - 2026-10-26
 
 A payment in another currency that names no invoice now holds the invoice it may pay.
