@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.13 - 2026-10-26
+
+Held invoices that are far overdue can no longer wait silently, drafts show the real amount, and a second payment needs `--force`.
+
+- **OVERDUE_HELD (critical).** Any invoice held for your decision (suggested, needs review, orphaned, or double-counted) more than `stuck_overdue_days` (30) overdue gets a CRITICAL line on every run, including the first time it is seen, naming the invoice, its days overdue and the exact `confirm` / `reject` / `mark-paid` / `unbind` / `rebind` / `forget` commands. `run` exits 2.
+- **CHECK FIRST drafts state the real amount.** A held invoice's draft used the outstanding after an unconfirmed suggestion ("for 0.00 USD"). It now uses the invoice amount less only what you confirmed.
+- **mark-paid refuses a second payment (blocker).** `mark-paid` refuses (exit 2) when a confirmed payment of the same client and amount already backs another invoice: "a payment of this client and amount already backs INV-701; pass --force if this is a second payment". `--force` records it with the warning.
+- README step 4 states the check-first rule in one sentence; exit-code list includes OVERDUE_HELD.
+
 ## 1.1.12 - 2026-10-26
 
 - `confirm INV --payment ID` and `rebind` refuse a payment whose text names a different known invoice id, unless `--force` (then recorded with a warning).

@@ -328,6 +328,12 @@ def run(args) -> int:
     for r in results:
         if r.status in HELD:
             r.days_overdue = days_overdue(r.invoice.due, today)
+    # 1.1.13: what the client still owes = the invoice amount less what you CONFIRMED. An unconfirmed suggestion never reduces it,
+    # so a CHECK FIRST draft never says "for 0.00".
+    for r in results:
+        rec = received_marks.get(r.invoice.id.strip().lower())
+        confirmed = Decimal(rec["amount"]) if rec and not (CHECK_SNAPSHOT and snapshot_diff(rec.get("snapshot", {}), r.invoice)) else Decimal("0")
+        r.owed = (r.invoice.amount - confirmed).quantize(Decimal("0.01"))
 
     # ---- the tool's own output: suggestions, never paid ----
     for r in results:  # say why a rejected payment is no longer suggested
@@ -400,6 +406,17 @@ def run(args) -> int:
         _warn(warnings, "STUCK_HOLD", f"{r.invoice.id} ({r.invoice.client}) is {r.days_overdue} days overdue and has waited {r.waiting_days} day(s) "
                                       f"because of {why}. No client reminder is drafted: the money may have arrived. Next step: check your bank "
                                       f"statement, then `invoice-chaser confirm`, `reject` or `mark-paid {quote(r.invoice.id)}`.")
+
+    # 1.1.13: ANY held invoice more than stuck_overdue_days overdue is CRITICAL on every run, including the first time it is seen,
+    # and names the exact commands that resolve it. run exits 2 until it is decided.
+    flag_out = "" if _out_hint(args.out) == "out" else f" --out {quote(_out_hint(args.out))}"
+    for r in results:
+        if r.status not in HELD or r.days_overdue <= cfg.stuck_overdue_days:
+            continue
+        cmds = _resolve_commands(r, orphans, paid_marks, received_marks, flag_out)
+        _warn(warnings, "OVERDUE_HELD", f"{r.invoice.id} ({r.invoice.client}) is {r.days_overdue} days overdue and held for your decision "
+                                        f"({r.why_not_paid or r.note}). No client reminder is drafted while it waits. Resolve it now: "
+                                        f"{'; '.join(cmds)}")
 
     out.mkdir(parents=True, exist_ok=True)
     settled = {r.invoice.id.lower() for r in results if r.status in ("paid", "void")}
@@ -672,6 +689,30 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
         r.stuck = r.waiting_days > cfg.stuck_after_days or r.days_overdue > cfg.stuck_overdue_days
     out.mkdir(parents=True, exist_ok=True)
     atomic_write_text(seen_file, json.dumps({"schema": SEEN_SCHEMA, "invoices": now}, indent=2, sort_keys=True))
+
+
+def _resolve_commands(r, orphans: list[dict], paid_marks: dict, received_marks: dict, flag: str) -> list[str]:
+    """The exact commands that resolve a held invoice, for the OVERDUE_HELD line (1.1.13)."""
+    qid = quote(r.invoice.id)
+    key = r.invoice.id.strip().lower()
+    cmds: list[str] = []
+    if r.status != "needs_review":  # a suggested payment: confirm it, or say it is not this invoice's
+        cmds.append(f"invoice-chaser confirm {qid}{flag}")
+        cmds += [f"invoice-chaser reject {qid} {quote(m.payment_id)}{flag}" for m in r.matches]
+    else:  # a payment to check: you checked it yourself, or it is not this invoice's
+        cmds.append(f"invoice-chaser mark-paid {qid}{flag}")
+        cmds += [f"invoice-chaser reject {qid} {quote(m.payment_id)}{flag}" for m in r.suggestions]
+    entry = paid_marks.get(key) or received_marks.get(key) or {}
+    if "PAYMENT_DOUBLE_BOUND" in (r.note or ""):  # your confirmation names a payment that also backs another invoice
+        cmds += [f"invoice-chaser unbind {qid} {quote(k)}{flag}" for k in entry.get("payments", [])]
+    for o in orphans:
+        if key in {h.strip().lower() for h in o["hold"]}:
+            if o["kind"] == "invoice":
+                cmds.append(f"invoice-chaser rebind {quote(o['old'])} {quote(o['new'])}{flag}")
+            else:
+                cmds += [f"invoice-chaser rebind {quote(o['old'])} {quote(c['key'])}{flag}" for c in o["candidates"] if c["verdict"] == "ok"]
+            cmds.append(f"invoice-chaser forget {quote(o['old'])}{flag}")
+    return list(dict.fromkeys(cmds))
 
 
 def _build_holds(results, orphans: list[dict], double_held: dict, invoices, paid_marks: dict, received_marks: dict, evidence: dict):
@@ -1133,8 +1174,8 @@ def mark_sent(args) -> int:
     return 0
 
 
-def _same_payment_warnings(path: Path, invoice_id: str, snapshot: dict) -> list[str]:
-    """M2: a confirmed payment with this invoice's client and amount that already backs ANOTHER invoice. A warning only: you may override."""
+def _same_payment_backers(path: Path, invoice_id: str, snapshot: dict) -> list[tuple[str, dict]]:
+    """A confirmed payment with this invoice's client and amount that already backs ANOTHER invoice: (other invoice, payment row)."""
     client = str(snapshot.get("client", "")).strip().casefold()
     if not client or not snapshot.get("amount"):
         return []
@@ -1150,9 +1191,7 @@ def _same_payment_warnings(path: Path, invoice_id: str, snapshot: dict) -> list[
         if other == me or str(s.get("client", "")).strip().casefold() != client:
             continue
         if same_money(row.get("amount"), snapshot["amount"]) and str(row.get("currency", "")) == str(snapshot.get("currency", "")):
-            out.append(f"WARNING: payment {row.get('key')} ({row.get('amount')} {row.get('currency')}, {row.get('date')}, payer {row.get('payer') or 'none'}) "
-                       f"already backs {row['invoice']}, for the same client and amount as {invoice_id}. A payment backs one invoice. If it is a "
-                       f"second payment, carry on; if not, do not mark {invoice_id} paid with it (`invoice-chaser unmark-paid` undoes a mark-paid).")
+            out.append((row["invoice"], row))
     return out
 
 
@@ -1172,8 +1211,16 @@ def mark_paid(args) -> int:
             for row in csv.DictReader(fh):
                 if row["invoice_id"].lower() == invoice_id.lower():
                     snapshot = {"client": row["client"], "amount": row["amount"], "currency": row["currency"], "due": row["due"]}
-    for line in _same_payment_warnings(path, invoice_id, snapshot):
-        print(line)
+    backers = _same_payment_backers(path, invoice_id, snapshot)
+    if backers and not args.force:  # 1.1.13: refused, not just warned; --force says it is a second payment
+        other = backers[0][0]
+        print(f"REFUSED: {invoice_id} not marked paid: a payment of this client and amount already backs {other}; "
+              f"pass --force if this is a second payment", file=sys.stderr)
+        return 2
+    for other, row in backers:
+        print(f"WARNING: payment {row.get('key')} ({row.get('amount')} {row.get('currency')}, {row.get('date')}, payer {row.get('payer') or 'none'}) "
+              f"already backs {other}, for the same client and amount as {invoice_id}. A payment backs one invoice. "
+              f"(`invoice-chaser unmark-paid` undoes a mark-paid.)")
     if not record_paid(path, invoice_id, when, args.note or "", snapshot, (), source="mark-paid"):
         print(f"nothing changed: {invoice_id} is already marked paid")
         return 1
@@ -1425,7 +1472,8 @@ def build_parser() -> argparse.ArgumentParser:
     for sp in (m, mp):
         sp.add_argument("--date", help="YYYY-MM-DD (default: today; not in the future)")
         sp.add_argument("--today", help=argparse.SUPPRESS)
-        sp.add_argument("--force", action="store_true", help="record an id that is not in <out>/status.csv")
+        sp.add_argument("--force", action="store_true", help="record an id that is not in <out>/status.csv; mark-paid: also a second payment "
+                                                            "of the same client and amount")
         common(sp)
     m.add_argument("--checked", action="store_true", help="required for a CHECK FIRST reminder: you verified the possible payment first")
     m.set_defaults(fn=mark_sent)

@@ -98,7 +98,7 @@ def variables_for(res: InvoiceResult, sender_name: str, payment_details: str, pe
         "client": inv.client,
         "invoice_id": inv.id,
         "amount": money(inv.amount, inv.currency),
-        "outstanding": money(res.outstanding, inv.currency),
+        "outstanding": money(res.owed if res.owed is not None else res.outstanding, inv.currency),
         "currency": inv.currency,
         "due_date": inv.due.isoformat(),
         "days_overdue": str(res.days_overdue),

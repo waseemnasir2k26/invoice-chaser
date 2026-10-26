@@ -64,7 +64,7 @@ def test_judge_case_stuck_held_invoice_gets_a_check_first_reminder_and_no_plain_
     setup(tmp_path)
     seed_first_seen(tmp_path, "2026-09-01", "INV-Z")                  # waiting 120 days, 182 days overdue
     code, rows = run(tmp_path)
-    assert code == 0 and rows["INV-Z"]["status"] == "needs_review"
+    assert code == 2 and rows["INV-Z"]["status"] == "needs_review"  # 1.1.13: 182 days overdue and held: CRITICAL OVERDUE_HELD, exit 2
     files = check_first_files(tmp_path)
     assert len(files) == 1 and files[0].startswith("INV-Z-") and files[0].endswith(".eml")
     drafts = sorted(p.name for p in (tmp_path / "out" / "drafts" / "internal").glob("INV-Z*.eml"))

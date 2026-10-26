@@ -224,7 +224,8 @@ def test_mark_paid_warns_when_a_confirmed_payment_of_the_same_client_and_amount_
     assert _run(base, "2026-09-20") in (0, 2)
     assert _cmd(base, "confirm", "INV-901", day="2026-09-20") == 0
     capsys.readouterr()
-    assert _cmd(base, "mark-paid", "INV-902", day="2026-09-20") == 0          # the override is allowed: no block
+    assert _cmd(base, "mark-paid", "INV-902", day="2026-09-20") == 2          # 1.1.13: refused without --force
+    assert _cmd(base, "mark-paid", "INV-902", "--force", day="2026-09-20") == 0  # the override is allowed: a second payment
     out = capsys.readouterr().out
     assert "WARNING: payment" in out and "already backs INV-901" in out and "same client and amount as INV-902" in out
 

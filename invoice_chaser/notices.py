@@ -19,6 +19,7 @@ SEVERITY = {
     "DUPLICATE_INVOICE_ID": "critical",
     "CHANGED_INVOICE": "critical",
     "STUCK_HOLD": "critical",
+    "OVERDUE_HELD": "critical",
     # warning
     "PAYMENT_ROW_DROPPED": "warning",
     "DUPLICATE_PAYMENT_ROW": "warning",
