@@ -16,7 +16,7 @@ STATUS_ORDER = [("suggested_paid", "Suggested paid (waiting for your confirm)"),
                 ("open", "Open, not yet due"), ("paid", "Paid (confirmed by you or marked paid in invoices.csv)"), ("void", "Void")]
 
 CSV_FIELDS = ["invoice_id", "client", "email", "currency", "amount", "paid", "outstanding", "due",
-              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "waiting_days", "stuck", "draft_status", "draft_file", "last_reminder"]
+              "status", "days_overdue", "stage", "confidence", "matched_payments", "reason", "why_not_paid", "waiting_days", "stuck", "draft_status", "draft_file", "last_reminder", "hold_reason"]
 
 
 def _csv_safe(v) -> str:
@@ -32,6 +32,9 @@ def _reason(r: InvoiceResult) -> str:
     return " | ".join(parts)
 
 
+_HELD_STATUSES = ("suggested_paid", "partial_suggested", "needs_review")  # waiting for your decision: the hold reason gets its own column
+
+
 def write_status_csv(results: list[InvoiceResult], drafts: dict[str, str], path: Path) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -42,7 +45,7 @@ def write_status_csv(results: list[InvoiceResult], drafts: dict[str, str], path:
                 i.id, i.client, i.email, i.currency, i.amount, r.paid, r.outstanding, i.due.isoformat(),
                 r.status, r.days_overdue, r.stage or "", f"{r.confidence:.2f}",
                 ";".join(m.payment_id for m in r.matches), _reason(r), r.why_not_paid, r.waiting_days, "yes" if r.stuck else "", r.draft_status, drafts.get(i.id, ""),
-                r.last_reminder.isoformat() if r.last_reminder else ""]])
+                r.last_reminder.isoformat() if r.last_reminder else "", r.why_not_paid if r.status in _HELD_STATUSES else ""]])
 
 
 def totals_by_currency(results: list[InvoiceResult]) -> dict[str, dict[str, Decimal]]:

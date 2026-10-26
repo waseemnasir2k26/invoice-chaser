@@ -68,3 +68,4 @@ class InvoiceResult:
     why_not_paid: str = ""
     waiting_days: int = 0  # how long this suggestion / review has been waiting for your decision
     stuck: bool = False
+    confirmed_on: str = ""  # date you confirmed or marked this invoice paid in the ledger ("" = never); a held one gets no client draft

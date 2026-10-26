@@ -260,6 +260,8 @@ def run(args) -> int:
         key = r.invoice.id.strip().lower()
         mark, rec = paid_marks.get(key), received_marks.get(key)
         entry = mark or rec
+        if entry:
+            r.confirmed_on = entry.get("date", "")
         if not entry or r.status in ("void", "paid"):
             continue
         changes = snapshot_diff(entry.get("snapshot", {}), r.invoice) if CHECK_SNAPSHOT else []
@@ -316,6 +318,11 @@ def run(args) -> int:
             r.why_not_paid = ("duplicate invoice id (case differs): another invoice in the file has the same id with different capitals. "
                               "Give each invoice its own id in invoices.csv, then run again")
             r.note = "no reminder is drafted for either invoice until the ids are unique"
+
+    # every held invoice shows its real days overdue, whichever path held it (a confirmed invoice that is now held was zeroed above)
+    for r in results:
+        if r.status in HELD:
+            r.days_overdue = days_overdue(r.invoice.due, today)
 
     # ---- the tool's own output: suggestions, never paid ----
     for r in results:  # say why a rejected payment is no longer suggested
@@ -665,7 +672,11 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
 
 
 def _no_client_draft(r, double_held: dict) -> str:
-    """Why a held invoice gets no client reminder even when it is stuck ("" = it may get a CHECK FIRST one)."""
+    """Why a held invoice gets no client reminder even when it is stuck ("" = it may get a CHECK FIRST one).
+    A ledger confirmation or mark-paid blocks every client draft (normal or CHECK FIRST) while the invoice is held:
+    you already said it was paid, so the only thing to send you is the internal note."""
+    if r.confirmed_on:
+        return f"you confirmed it paid on {r.confirmed_on}, so the money may have arrived"
     if r.invoice.id.strip().lower() in double_held:
         return "a payment backs two invoices (PAYMENT_DOUBLE_BOUND): the money may have arrived"
     if any(DOUBLE_COUNT.search(m.suspect or "") for m in (r.matches or r.suggestions)):
@@ -719,6 +730,18 @@ def _check_item(r, cfg, out_hint: str) -> dict:
     inv = r.invoice
     qid = quote(inv.id)
     flag = "" if out_hint == "out" else f" --out {quote(out_hint)}"
+    if r.confirmed_on:  # you already confirmed it: say so, and offer only the two ways to resolve it
+        head = f"You confirmed this paid on {r.confirmed_on}, but the invoice changed: re-confirm or unmark."
+        lines = [f"Invoice {inv.id} ({inv.client}, {inv.amount:,.2f} {inv.currency}, due {inv.due.isoformat()}) is {r.days_overdue} days overdue. "
+                 "No reminder goes to the client while it is held.", "", head, f"Why: {r.why_not_paid}", "",
+                 "Decide with one of:",
+                 f"  invoice-chaser unmark-paid {qid}{flag}   (it is not paid: run again for a fresh suggestion)",
+                 f"  invoice-chaser mark-paid {qid}{flag}     (you re-checked it against the changed invoice: it is paid)",
+                 "", "This note is for you. It was not sent to the client."]
+        return {"invoice_id": inv.id, "stage": "check", "internal": True, "to": cfg.sender_email or "set-sender-email@example.invalid",
+                "from_name": "invoice-chaser", "from_email": cfg.sender_email,
+                "subject": f"Check {inv.id}: confirmed paid on {r.confirmed_on}, invoice changed, {r.days_overdue} days overdue",
+                "body": "\n".join(lines) + "\n"}
     waited = "first seen today" if r.waiting_days == 0 else f"waiting for your decision for {r.waiting_days} day(s)"
     lines = [f"Invoice {inv.id} ({inv.client}, {inv.amount:,.2f} {inv.currency}, due {inv.due.isoformat()}) is {r.days_overdue} days overdue "
              f"and its payment is {waited}. No reminder goes to the client while it waits.", "",

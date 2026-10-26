@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.8  as of 2026-10-25
+invoice-chaser 1.1.9  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -

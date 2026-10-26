@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.9 - 2026-10-26
+
+Judge review fixes: a confirmed payment is never chased, and held invoices show their real age.
+
+- **No client draft for a confirmed invoice that is held.** An invoice you confirmed or marked paid, whose ledger entry no longer matches (`CHANGED_INVOICE`, an orphaned decision, a payment that backs two invoices), gets no client reminder of any kind: no normal draft and no `[CHECK FIRST]` draft. It gets only the internal `-check.eml` note, which now reads "You confirmed this paid on <date>, but the invoice changed: re-confirm or unmark." (A confirmed invoice that is simply part-paid and still owed keeps its normal reminder.)
+- **Real days overdue on every held invoice.** A held invoice showed `0` days overdue in `status.csv` when a ledger confirmation or a double-bound payment had put it on hold. It now shows the real days overdue. The hold reason is in a new last column, `hold_reason`, for every invoice waiting for your decision.
+- **Speed test tolerant of slow runners.** `test_naming_every_invoice_is_fast` makes one warm-up run before timing and gets twice the budget on Windows and on CI.
+
 ## 1.1.8 - 2026-10-26
 
 A stuck invoice is no longer silent to its client forever, and two small fixes from the judge review.
