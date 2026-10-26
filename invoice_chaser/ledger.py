@@ -160,9 +160,76 @@ def _clean_orphans(path: Path, older_than: float = 60.0) -> None:
             pass
 
 
-def _write(path: str | Path, data: dict) -> None:
-    """Atomic write of the ledger with a .bak of the previous version. Call inside _locked()."""
-    atomic_write_text(path, json.dumps({"schema": SCHEMA, **{k: v for k, v in data.items() if k != "schema"}}, indent=2, ensure_ascii=False), backup=True)
+def _normal(data: dict) -> dict:
+    """The ledger as it is stored: every section present, plain JSON values (what a re-read returns)."""
+    return json.loads(json.dumps({"schema": SCHEMA, **{k: data.get(k, {}) for k in _SECTIONS}}, ensure_ascii=False))
+
+
+def _norm_id(invoice_id) -> str:
+    return str(invoice_id).strip().lower()
+
+
+def double_bindings(data: dict) -> dict[str, list[str]]:
+    """Invariant I1: a payment key may back at most ONE invoice. Returns {payment key: [invoice ids]} for every key that
+    backs two or more different invoices (ids compared ignoring case and spaces). Empty dict = the invariant holds."""
+    owners: dict[str, dict[str, str]] = {}
+    for section in ("paid", "received"):
+        for inv, entry in data.get(section, {}).items():
+            for key in entry.get("payments", []):
+                owners.setdefault(key, {}).setdefault(_norm_id(inv), inv)
+    return {key: sorted(ids.values()) for key, ids in owners.items() if len(ids) > 1}
+
+
+def load_double_bindings(path: str | Path) -> dict[str, list[str]]:
+    return double_bindings(_read(path))
+
+
+def bound_to(data: dict, key: str) -> list[str]:
+    """Every invoice whose confirmation (paid or part-payment) is backed by this payment key."""
+    out = []
+    for section in ("paid", "received"):
+        for inv, entry in data.get(section, {}).items():
+            if key in entry.get("payments", []):
+                out.append(inv)
+    return out
+
+
+def _taken_keys(data: dict) -> dict[str, str]:
+    """Every payment key that already has a decision, and what it is: bound to an invoice, or rejected for one."""
+    taken = {}
+    for section in ("paid", "received"):
+        for inv, entry in data.get(section, {}).items():
+            for key in entry.get("payments", []):
+                taken.setdefault(key, f"confirmed for {inv}")
+    for inv, keys in data.get("rejected", {}).items():
+        for key in keys:
+            taken.setdefault(key, f"rejected for {inv}")
+    return taken
+
+
+def _write(path: str | Path, data: dict) -> bool:
+    """Atomic write of the ledger with a .bak of the previous version. Call inside _locked().
+
+    Refuses (writes nothing) when the new ledger would bind a payment key to a second invoice (I1); a write that leaves an
+    existing double binding in place is allowed, so that `unbind` can remove it. After writing, the file is re-read and must
+    show the change (I2). Returns False, writing nothing, when the data is already what is stored."""
+    new = _normal(data)
+    try:
+        old = _read(path)
+    except ValueError:  # an unreadable or pre-release file is being replaced (reset): nothing to compare against
+        old = None
+    if old is not None and new == old:
+        return False
+    added = sorted(set(double_bindings(new)) - set(double_bindings(old or {})))
+    if added:
+        bindings = double_bindings(new)
+        key = added[0]
+        raise ValueError(f"refused: this would back payment {key} with two invoices ({' and '.join(bindings[key])}). "
+                         f"Nothing was written. Run `invoice-chaser unbind <invoice> {key}` for the one that did not receive it")
+    atomic_write_text(path, json.dumps(new, indent=2, ensure_ascii=False), backup=True)
+    if _read(path) != new:
+        raise ValueError(f"the ledger was written but reading it back does not show the change: check {Path(path).name} and its .bak before going on")
+    return True
 
 
 def load_ledger(path: str | Path) -> dict[str, list[dict]]:
@@ -225,9 +292,9 @@ def reset_ledger(path: str | Path, backup: bool) -> Path:
 
 def forget_key(path: str | Path, key: str) -> bool:
     """Remove one payment reference from every decision: the invoice stays confirmed, a rejection of that payment is lifted."""
-    hit = False
     with _locked(path):
         data = _read(path)
+        hit = False
         for section in ("paid", "received"):
             for entry in data[section].values():
                 if key in entry.get("payments", []):
@@ -248,48 +315,58 @@ def forget_key(path: str | Path, key: str) -> bool:
                 hit = True
                 if not data["rejected_rows"][inv]:
                     del data["rejected_rows"][inv]
-        if hit:
-            _write(path, data)
-    return hit
+        return hit and _write(path, data)
 
 
 def forget_invoice(path: str | Path, invoice_id: str) -> bool:
     """Remove every decision about an invoice id (paid, part-payment, rejections). Sent reminders stay."""
-    hit = False
     want = invoice_id.strip().lower()
     with _locked(path):
         data = _read(path)
+        hit = False
         for section in ("paid", "received", "rejected", "rejected_rows"):
             for k in [k for k in data[section] if str(k).strip().lower() == want]:
                 del data[section][k]
                 hit = True
-        if hit:
-            _write(path, data)
-    return hit
+        return hit and _write(path, data)
+
+
+def _check_target_free(data: dict, target: str, source: str) -> None:
+    """I4: a rename or rebind never overwrites a decision that already sits on its target."""
+    for section in ("paid", "received", "rejected", "rejected_rows", "sent"):
+        for k in data[section]:
+            if _norm_id(k) == _norm_id(target) and _norm_id(k) != _norm_id(source):
+                raise ValueError(f"refused: {target} already has decisions in the ledger ({section}); it is not overwritten. "
+                                 f"Look at it first, then `invoice-chaser forget {source}` if {source} is the stale one")
 
 
 def rename_invoice(path: str | Path, old: str, new: str) -> bool:
     """You renamed an invoice id in invoices.csv: move the decisions about it (paid, part-payment, rejections, sent reminders)."""
-    hit = False
     want = old.strip().lower()
     with _locked(path):
         data = _read(path)
+        if not any(_norm_id(k) == want for section in ("paid", "received", "rejected", "rejected_rows", "sent") for k in data[section]):
+            return False
+        _check_target_free(data, new, old)
         for section in ("paid", "received", "rejected", "rejected_rows", "sent"):
             for k in [k for k in data[section] if str(k).strip().lower() == want]:
                 data[section][new] = data[section].pop(k)
-                hit = True
-        if hit:
-            _write(path, data)
-    return hit
+        return _write(path, data)
 
 
-def rebind_keys(path: str | Path, mapping: dict[str, str]) -> None:
+def rebind_keys(path: str | Path, mapping: dict[str, str]) -> bool:
     """Point confirmed and rejected payments at the keys they have TODAY (old key -> new key). Used when a payment is found again
-    by its fingerprint under a different id; the decision follows the payment instead of being dropped."""
+    by its fingerprint under a different id; the decision follows the payment instead of being dropped. Refuses a target key that
+    already has a decision (I1, I4): a payment key may back one invoice only, and nothing is overwritten."""
     if not mapping:
-        return
+        return False
     with _locked(path):
         data = _read(path)
+        taken = _taken_keys(data)
+        for old, new in mapping.items():
+            if new in taken:
+                raise ValueError(f"refused: payment {new} already has a decision ({taken[new]}). A payment can back one invoice only, "
+                                 f"and nothing is overwritten. Compare the two on your statement first")
         for section in ("paid", "received"):
             for entry in data[section].values():
                 entry["payments"] = [mapping.get(k, k) for k in entry.get("payments", [])]
@@ -299,10 +376,26 @@ def rebind_keys(path: str | Path, mapping: dict[str, str]) -> None:
             data["rejected"][inv] = [mapping.get(k, k) for k in keys]
         for inv, rows in data["rejected_rows"].items():
             data["rejected_rows"][inv] = {mapping.get(k, k): v for k, v in rows.items()}
-        _write(path, data)
+        return _write(path, data)
 
 
-def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> None:
+def unbind_payment(path: str | Path, invoice_id: str, key: str) -> bool:
+    """`invoice-chaser unbind INV PAYMENT`: this invoice's confirmation is removed, because the payment that backed it is not its
+    payment. The invoice goes back to a fresh suggestion (it can only return to review, never become paid by this command).
+    Returns False if this invoice is not bound to that payment."""
+    want = invoice_id.strip().lower()
+    with _locked(path):
+        data = _read(path)
+        hit = False
+        for section in ("paid", "received"):
+            for inv in [k for k in data[section] if _norm_id(k) == want]:
+                if key in data[section][inv].get("payments", []):
+                    del data[section][inv]
+                    hit = True
+        return hit and _write(path, data)
+
+
+def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> bool:
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {', '.join(STAGES)}")
     with _locked(path):
@@ -311,31 +404,31 @@ def record_sent(path: str | Path, invoice_id: str, stage: str, when: date) -> No
         entry = {"stage": stage, "date": when.isoformat()}
         if entry not in entries:
             entries.append(entry)
-        _write(path, data)
+        return _write(path, data)
 
 
 def record_paid(path: str | Path, invoice_id: str, when: date, note: str = "", snapshot: dict | None = None,
-                payments=(), source: str = "mark-paid", rows=()) -> None:
+                payments=(), source: str = "mark-paid", rows=()) -> bool:
     with _locked(path):
         data = _read(path)
         data["paid"][invoice_id] = {"date": when.isoformat(), "note": note, "source": source,
                                     "payments": list(payments), "snapshot": snapshot or {}, "payment_rows": list(rows)}
         data["received"].pop(invoice_id, None)  # fully paid now
-        _write(path, data)
+        return _write(path, data)
 
 
 def record_received(path: str | Path, invoice_id: str, when: date, amount: Decimal, payments=(),
-                    snapshot: dict | None = None, rows=()) -> None:
+                    snapshot: dict | None = None, rows=()) -> bool:
     if not Decimal(amount).is_finite() or Decimal(amount) < 0:
         raise ValueError(f"received amount {amount!r} must be a finite, non-negative number")
     with _locked(path):
         data = _read(path)
         data["received"][invoice_id] = {"date": when.isoformat(), "amount": str(amount), "payments": list(payments),
                                         "snapshot": snapshot or {}, "payment_rows": list(rows)}
-        _write(path, data)
+        return _write(path, data)
 
 
-def apply_confirmations(path: str | Path, ops: list[dict]) -> None:
+def apply_confirmations(path: str | Path, ops: list[dict]) -> bool:
     """Several confirmations in ONE locked read-modify-write and ONE atomic write: all of them or none.
 
     op: {invoice_id, kind: "paid"|"received", when: date, snapshot, keys, rows, amount (received), source}"""
@@ -353,10 +446,10 @@ def apply_confirmations(path: str | Path, ops: list[dict]) -> None:
                     raise ValueError(f"received amount {op['amount']!r} must be a finite, non-negative number")
                 data["received"][inv] = {"date": op["when"].isoformat(), "amount": str(amount), "payments": list(op["keys"]),
                                          "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
-        _write(path, data)
+        return _write(path, data)
 
 
-def record_rejected(path: str | Path, invoice_id: str, payment_id: str, row: dict | None = None) -> None:
+def record_rejected(path: str | Path, invoice_id: str, payment_id: str, row: dict | None = None) -> bool:
     with _locked(path):
         data = _read(path)
         ids = data["rejected"].setdefault(invoice_id, [])
@@ -364,7 +457,7 @@ def record_rejected(path: str | Path, invoice_id: str, payment_id: str, row: dic
             ids.append(payment_id)
         if row:
             data["rejected_rows"].setdefault(invoice_id, {})[payment_id] = row
-        _write(path, data)
+        return _write(path, data)
 
 
 def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
@@ -377,9 +470,7 @@ def unrecord_paid(path: str | Path, invoice_id: str) -> bool:
             for k in [k for k in data[section] if str(k).strip().lower() == want]:
                 del data[section][k]
                 hit = True
-        if hit:
-            _write(path, data)
-        return hit
+        return hit and _write(path, data)
 
 
 def ci(mapping: dict) -> dict:
@@ -423,3 +514,8 @@ def last_sent_date(entries: list[dict] | None) -> date | None:
     if not entries:
         return None
     return max(date.fromisoformat(e["date"]) for e in entries)
+
+
+def read_ledger(path: str | Path) -> dict:
+    """The whole ledger as a dict (validated). Read-only: use the load_* functions for one section."""
+    return _read(path)

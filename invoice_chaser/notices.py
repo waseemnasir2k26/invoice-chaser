@@ -12,6 +12,7 @@ from __future__ import annotations
 SEVERITY = {
     # critical
     "ORPHANED_DECISION": "critical",
+    "PAYMENT_DOUBLE_BOUND": "critical",
     "ID_COLLISION": "critical",
     "POSSIBLE_DOUBLE_COUNT": "critical",
     "INVOICE_ROW_DROPPED": "critical",

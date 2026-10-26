@@ -51,14 +51,14 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.6  as of 2026-10-25
+invoice-chaser 1.1.7  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
   INV-1003   suggested_paid          0.00 USD   10d  -
   INV-1004   overdue              1800.00 EUR    4d  nudge
   INV-1005   overdue               640.00 GBP   40d  escalation
-  INV-1006   needs_review          950.00 USD    7d  -
+  INV-1006   needs_review          950.00 USD  held: possible payment found but it is not certain: no reminder drafted until you check  -
   INV-1008   overdue               500.00 USD   11d  firm
   3 suggested payment(s) wait for you: `invoice-chaser confirm <INV>` or `confirm --all-strong`
   3 draft(s) written (nothing sent) -> out/drafts
@@ -172,6 +172,31 @@ A decision you made (a confirmed payment, a rejected payment, a confirmed invoic
 
 If a confirmed payment is simply not in today's exports (a shorter or newer statement) and nothing looks like it, nothing is wrong and nothing is said.
 
+**Candidates come from today's exports.** `rebind`, `forget` and `orphans` re-read the exports of the last run (same files, same options) and look for candidates at the moment you run them. Nothing is taken from a saved list, so a candidate that has since gone away is never offered. An invoice rename is keyed by kind, old id and new id: two identical invoices renamed `X1` and `X2` give two rows, `invoice-chaser rebind INV-A X1` takes one, and resolving it drops A's other candidate row. `invoice-chaser orphans` lists every pending orphan with its exact commands.
+
+**Nothing is overwritten.** `rebind` and a renamed invoice id are refused if the target already has a decision (a confirmation, a rejection or a sent reminder on the target id, or a payment that already backs an invoice or is already rejected). The message says what is there; you look at it, then `forget` the stale one.
+
+## One payment backs one invoice
+
+A payment key can back at most ONE invoice in the ledger. This is checked on every `run` and before every ledger write:
+
+- If the ledger ever shows one payment behind two invoices, `run` prints a **CRITICAL `PAYMENT_DOUBLE_BOUND`** warning naming both invoices and the payment, and holds both invoices (`held:` in the list, no reminder, not counted paid). It prints the command for each invoice: `invoice-chaser unbind <invoice> <payment>`.
+- `invoice-chaser unbind INV PAYMENT` removes that invoice's confirmation for that payment. The invoice goes back to a fresh suggestion, and the other invoice keeps its own confirmation. It can only send an invoice back to review; it never marks anything paid.
+- `confirm` and `rebind` refuse a payment that already backs any invoice, and say which one.
+- A write is refused, and nothing is written, when it would add a second binding. Existing bindings are removed with `unbind`, which is always allowed.
+
+## Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0`  | done; no CRITICAL notice in this run |
+| `1`  | nothing changed: the command was valid but the ledger already said so (`nothing changed` is printed) |
+| `2`  | an error (bad id, refused change, unreadable input), **or** `run` finished with one or more **CRITICAL** notices |
+
+`run` exits with code **2** whenever a CRITICAL notice exists (an orphaned decision, a payment that could be the same as a confirmed one, a double binding, a dropped invoice row, ...). Scripts and scheduled jobs should treat 2 as "look at review.html before you act". Warnings and routine notices keep exit code 0.
+
+Every command that writes the ledger reads the file back afterwards and checks that the change is there; if it is not, it says so and exits with an error instead of reporting success.
+
 ## The overdue ladder
 
 | Days overdue | Stage        | Intent                                                            |
@@ -197,18 +222,20 @@ invoice-chaser confirm INV-1002              # accept the suggested payment (a p
 invoice-chaser confirm --all-strong          # list every strong suggested-paid invoice, ask y/N (--yes to skip the question)
 invoice-chaser reject INV-1002 W1            # that payment is NOT for this invoice: never suggested for it again
 invoice-chaser confirm INV-9 --payment W9    # you name the payment(s) yourself; also works on a held suggestion. If two exports use the same id, say wise:W9 or bank:W9
+invoice-chaser orphans                       # list pending orphaned decisions with the exact commands (today's exports)
 invoice-chaser rebind <old> <new>            # you decided an orphaned decision belongs to the new payment / renamed invoice (checked first)
 invoice-chaser forget <old>                  # drop an orphaned decision
+invoice-chaser unbind <INV> <payment>        # this payment does NOT back that invoice: remove its confirmation (see "One payment backs one invoice")
 invoice-chaser mark-paid INV-1006 --note "checked bank"   # you checked yourself; no suggestion needed
 invoice-chaser unmark-paid INV-1006          # changed your mind
 invoice-chaser mark-sent INV-1005            # you sent that reminder: the stage is not drafted twice
 ```
 
-All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. Today nothing is repaired for you (see "Orphaned decisions" below), and `invoice-chaser ledger reset --backup` refuses a path with no ledger in it, never overwrites an earlier backup, and compares the copy byte for byte with the original before it resets anything.
+All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `rebind`, `forget`, `unbind` and `orphans` do not depend on the day: they use the exports as they are now. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. Today nothing is repaired for you (see "Orphaned decisions" below), and `invoice-chaser ledger reset --backup` refuses a path with no ledger in it, never overwrites an earlier backup, and compares the copy byte for byte with the original before it resets anything.
 
 - **confirm:** records the invoice as paid (or the part-payment as received) with the exact payment ids and a snapshot of the invoice. The payments are used up: they are not suggested for another invoice.
 - **reject:** the next run does not suggest that payment for that invoice again, so the invoice is chased (or shows its next candidate).
-- **mark-paid:** the next run shows the invoice as paid, with your note, and drafts nothing for it. A second mark-paid warns "already marked paid" and changes nothing.
+- **mark-paid:** the next run shows the invoice as paid, with your note, and drafts nothing for it. A second mark-paid prints "nothing changed: ... already marked paid" and exits 1.
 - **mark-sent:** a stage you already sent is never drafted again (the review page says when the next stage starts), and the next draft is worded as a follow-up with the date of your last reminder.
 - **Stale drafts:** if you edited a draft and the invoice later becomes paid, your edited file is moved to `out/drafts/stale/` with a warning. It is never deleted. Edited drafts are remembered in `out/kept.json` so the warning repeats every run until you deal with the file.
 

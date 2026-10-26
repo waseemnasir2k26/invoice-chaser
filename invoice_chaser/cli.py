@@ -29,9 +29,11 @@ from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
     apply_confirmations,
     atomic_write_text,
+    bound_to,
     ci,
     highest_sent,
     last_sent_date,
+    load_double_bindings,
     load_ledger,
     load_paid,
     load_payment_rows,
@@ -40,6 +42,7 @@ from .ledger import (
     load_rejected_rows,
     forget_invoice,
     forget_key,
+    read_ledger,
     rebind_keys,
     rename_invoice,
     record_paid,
@@ -48,6 +51,7 @@ from .ledger import (
     reset_ledger,
     snapshot_diff,
     snapshot_of,
+    unbind_payment,
     unrecord_paid,
 )
 from .llm import personal_line
@@ -72,6 +76,43 @@ CHECK_SNAPSHOT = True  # tests switch this off to prove the snapshot check is wh
 
 def _ledger_path(args) -> Path:
     return Path(args.ledger) if getattr(args, "ledger", None) else Path(args.out) / "sent.json"
+
+
+def _load_exports(args, cfg):
+    """Parse the invoices and payment exports exactly as `run` does. The commands that look for orphan candidates use the same code,
+    on the exports as they are now, so a candidate is always one that exists today."""
+    opts = ParseOptions(date_order=getattr(args, "date_format", None), default_currency=cfg.default_currency,
+                        strict=getattr(args, "strict", False),
+                        decimal_comma=True if getattr(args, "decimal_comma", False) else cfg.decimal_comma)
+    invoices = read_invoices(args.invoices, opts)
+    if not invoices:
+        skipped = [str(w) for w in opts.warnings if getattr(w, "code", "") == "INVOICE_ROW_DROPPED"]
+        raise ParseError(f"no invoices found in {Path(args.invoices).name}: it has no usable rows (an empty file, only the header line, or every "
+                         f"row was skipped{': ' + '; '.join(skipped[:3]) if skipped else ''}). Nothing was written.")
+    payments = []
+    for p in args.wise or []:
+        payments += parse_wise(p, opts)
+    for p in args.payoneer or []:
+        payments += parse_payoneer(p, opts)
+    mapping = dict(cfg.bank_mapping)
+    if args.mapping:
+        mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8-sig"))
+    for p in args.bank or []:
+        if not mapping:
+            raise ParseError("--bank needs a column mapping (--mapping file.json or bank_mapping in config)")
+        payments += parse_generic(p, mapping, opts)
+    payments = dedupe_payments(payments, opts.warn)
+    return invoices, payments, opts
+
+
+def _export_args(args) -> dict:
+    """The inputs of a run, as absolute paths, so the candidate lookups can re-read the same kinds of exports later (local only)."""
+    def ab(p):
+        return str(Path(p).resolve()) if p else None
+    return {"invoices": ab(args.invoices), "wise": [ab(p) for p in args.wise or []], "payoneer": [ab(p) for p in args.payoneer or []],
+            "bank": [ab(p) for p in args.bank or []], "mapping": ab(args.mapping), "config": ab(args.config),
+            "date_format": getattr(args, "date_format", None), "decimal_comma": bool(getattr(args, "decimal_comma", False)),
+            "strict": bool(getattr(args, "strict", False))}
 
 
 def _pkey(p) -> str:
@@ -112,27 +153,7 @@ def run(args) -> int:
     templates_dir = Path(args.templates) if args.templates else None
     llm_keys = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
-    opts = ParseOptions(date_order=getattr(args, "date_format", None), default_currency=cfg.default_currency,
-                        strict=getattr(args, "strict", False),
-                        decimal_comma=True if getattr(args, "decimal_comma", False) else cfg.decimal_comma)
-    invoices = read_invoices(args.invoices, opts)
-    if not invoices:
-        skipped = [str(w) for w in opts.warnings if getattr(w, "code", "") == "INVOICE_ROW_DROPPED"]
-        raise ParseError(f"no invoices found in {Path(args.invoices).name}: it has no usable rows (an empty file, only the header line, or every "
-                         f"row was skipped{': ' + '; '.join(skipped[:3]) if skipped else ''}). Nothing was written.")
-    payments = []
-    for p in args.wise or []:
-        payments += parse_wise(p, opts)
-    for p in args.payoneer or []:
-        payments += parse_payoneer(p, opts)
-    mapping = dict(cfg.bank_mapping)
-    if args.mapping:
-        mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8-sig"))
-    for p in args.bank or []:
-        if not mapping:
-            raise ParseError("--bank needs a column mapping (--mapping file.json or bank_mapping in config)")
-        payments += parse_generic(p, mapping, opts)
-    payments = dedupe_payments(payments, opts.warn)
+    invoices, payments, opts = _load_exports(args, cfg)
 
     out = Path(args.out)
     lpath = _ledger_path(args)
@@ -142,6 +163,16 @@ def run(args) -> int:
     paid_marks = ci(load_paid(lpath))
     received_marks = ci(load_received(lpath))
     rejected = ci(load_rejected(lpath))
+    # I1, checked on every run: a payment key backing two invoices holds both of them
+    double = load_double_bindings(lpath)
+    double_held: dict[str, str] = {}
+    for key, owners in sorted(double.items()):
+        cmds = "; ".join(f"`invoice-chaser unbind {quote(inv)} {quote(key)}`" for inv in owners)
+        _warn(warnings, "PAYMENT_DOUBLE_BOUND", f"payment {key} backs {' AND '.join(owners)} in your ledger, but a payment can back one invoice only. "
+                        f"Both are held: no reminder, not counted paid. Next step: check your statement, then run {cmds} for each invoice "
+                        f"that did NOT receive it (both, if neither did), and run again.")
+        for inv in owners:
+            double_held.setdefault(inv.strip().lower(), f"payment {key} also backs another invoice (PAYMENT_DOUBLE_BOUND)")
 
     # ---- what you already decided: confirmed payments are consumed, rejected ones never come back ----
     consumed = {k: inv for inv, m in list(paid_marks.items()) + list(received_marks.items()) for k in m.get("payments", [])}
@@ -265,6 +296,14 @@ def run(args) -> int:
                     r.matches, r.suggestions = [], []
                     r.why_not_paid = _orphan_text(o)
                     r.note = "ORPHANED_DECISION: no reminder is drafted until you rebind or forget it"
+    # a payment backing two invoices (I1): both are held, neither is counted paid, until one of them is unbound
+    for r in results:
+        reason = double_held.get(r.invoice.id.strip().lower())
+        if reason:
+            r.status, r.stage, r.paid, r.outstanding = "needs_review", None, Decimal("0.00"), r.invoice.amount
+            r.matches, r.suggestions = [], []
+            r.why_not_paid = reason
+            r.note = "PAYMENT_DOUBLE_BOUND: not counted paid, no reminder, until unbound"
     # INV-6001 and inv-6001 in the same file: never merged, never guessed. Both wait in needs review and neither gets a reminder.
     for r in results:
         if " ".join(r.invoice.id.casefold().split()) in opts.case_dup_ids:
@@ -344,11 +383,11 @@ def run(args) -> int:
              *([args.mapping] if args.mapping else []), *([args.config] if args.config else [])]
     inputs = [{"name": Path(f).name, "sha256": _file_hash(f)} for f in files]
     # Full paths stay in a local-only file (never in anything you might share): confirm needs them to re-check the exports.
-    (out / "local-state.json").write_text(json.dumps({"note": "local only: do not share",
+    (out / "local-state.json").write_text(json.dumps({"note": "local only: do not share", "args": _export_args(args),
                                                       "inputs": [{"name": Path(f).name, "path": str(Path(f).resolve()),
                                                                   "sha256": _file_hash(f)} for f in files]}, indent=2), encoding="utf-8")
-    (out / "orphans.json").write_text(json.dumps({"generated_on": date.today().isoformat(), "orphans": orphans}, indent=2, ensure_ascii=False), encoding="utf-8")
-    (out / "suggestions.json").write_text(json.dumps({"run_date": today.isoformat(), "generated_on": date.today().isoformat(),
+    (out / "orphans.json").write_text(json.dumps({"generated_on": today.isoformat(), "orphans": orphans}, indent=2, ensure_ascii=False), encoding="utf-8")
+    (out / "suggestions.json").write_text(json.dumps({"run_date": today.isoformat(), "generated_on": today.isoformat(),
                                                      "inputs": inputs, "suggestions": suggestions}, indent=2, ensure_ascii=False), encoding="utf-8")
     drafts = {it["invoice_id"]: it["file"] for it in items if not it.get("internal")}
     write_status_csv(results, drafts, out / "status.csv")
@@ -362,8 +401,9 @@ def run(args) -> int:
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     for r in results:
         if r.status in ("suggested_paid", "partial_suggested", "overdue", "partial", "needs_review"):
-            print(f"  {r.invoice.id:<10} {r.status:<17} {r.outstanding:>10} {r.invoice.currency}  "
-                  f"{r.days_overdue:>3}d  {r.stage or '-'}")
+            when = (f"held: {r.note or r.why_not_paid or 'waiting for your decision'}" if r.status == "needs_review"
+                    else f"{r.days_overdue:>3}d")
+            print(f"  {r.invoice.id:<10} {r.status:<17} {r.outstanding:>10} {r.invoice.currency}  {when}  {r.stage or '-'}")
     strong = [s for s in suggestions if s["kind"] in ("paid", "partial")]
     if strong:
         print(f"  {len(strong)} suggested payment(s) wait for you: `invoice-chaser confirm <INV>`"
@@ -378,6 +418,8 @@ def run(args) -> int:
     for n in notes:
         print("  " + n)
     _print_warnings(warnings, out)
+    if any(getattr(w, "severity", "warning") == "critical" for w in warnings):
+        return 2  # a CRITICAL notice (see README: exit codes) must not be missed by a script or a scheduled job
     return 0
 
 
@@ -753,17 +795,28 @@ def _confirm_op(entry: dict, when: date, rows_all: list[dict]) -> tuple[dict, st
                 f"{amount - got:,.2f} stays outstanding and will be chased")
 
 
-def _confirm_all(entries: list[dict], when: date, lpath: Path) -> list[str]:
+def _refuse_bound_keys(entries: list[dict], data: dict) -> None:
+    """I1: a payment you confirm must not already back an invoice (the same one or another): a payment backs one invoice only."""
+    for e in entries:
+        for p in e["payments"]:
+            owners = bound_to(data, p["key"])
+            if owners:
+                raise ValueError(f"refused: payment {p['key']} already backs {', '.join(owners)} in your ledger, and a payment can back one "
+                                 f"invoice only. Nothing was recorded. If that link is wrong: `invoice-chaser unbind {quote(owners[0])} {quote(p['key'])}`")
+
+
+def _confirm_all(entries: list[dict], when: date, lpath: Path) -> tuple[list[str], bool]:
     """All or nothing: every check for every invoice runs first and a single problem stops the whole batch with the
-    full list; only then is the ledger written, once, atomically."""
+    full list; only then is the ledger written, once, atomically. Returns (summaries, changed)."""
+    _refuse_bound_keys(entries, read_ledger(lpath))
     rows = load_payment_rows(lpath)
     problems = [m for e in entries for m in _repeat_problems(e, rows)]
     if problems:
         raise ValueError("nothing was recorded, because " + ("one confirmation is" if len(problems) == 1 else f"{len(problems)} confirmations are")
                          + " held back:\n  " + "\n  ".join(problems))
     built = [_confirm_op(e, when, rows) for e in entries]
-    apply_confirmations(lpath, [op for op, _ in built])
-    return [summary for _, summary in built]
+    changed = apply_confirmations(lpath, [op for op, _ in built])
+    return [summary for _, summary in built], changed
 
 
 def _entry_with_payments(entries: list[dict], invoice: str, wanted: list[str]) -> dict:
@@ -823,6 +876,7 @@ def confirm(args) -> int:
         if problems:  # before anything is shown or asked: the whole batch is refused with the full list
             raise ValueError("nothing was recorded, because " + ("one confirmation is" if len(problems) == 1 else f"{len(problems)} confirmations are")
                              + " held back:\n  " + "\n  ".join(problems))
+        _refuse_bound_keys(todo, read_ledger(lpath))
         print("These invoices will be recorded as PAID in the ledger. Read the payer and the text of each payment:")
         for e in todo:
             print(f"  {e['invoice_id']}  {visible(e['client'])}  {e['currency']} {Decimal(e['amount']):,.2f}")
@@ -839,7 +893,10 @@ def confirm(args) -> int:
             if answer not in ("y", "yes"):
                 print("nothing recorded")
                 return 1
-        summaries = _confirm_all(todo, when, lpath)
+        summaries, changed = _confirm_all(todo, when, lpath)
+        if not changed:
+            print("nothing changed: these confirmations are already in the ledger")
+            return 1
         for line in summaries:
             print("  " + line)
         print(f"recorded {len(todo)} confirmation(s) in one step -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
@@ -850,7 +907,11 @@ def confirm(args) -> int:
     if getattr(args, "payment", None):
         entry = _entry_with_payments(entries, args.invoice, args.payment)
         _check_still_valid([entry], meta, lpath, real_today)
-        print(_confirm_all([entry], when, lpath)[0])
+        summaries, changed = _confirm_all([entry], when, lpath)
+        if not changed:
+            print(f"nothing changed: {entry['invoice_id']} already has this confirmation in the ledger")
+            return 1
+        print(summaries[0])
         for q in entry.get("left_over", []):  # the other half of a pair: not counted, and not left to chance
             iid = quote(entry["invoice_id"])
             print(f"  held: payment {q['key']} ({q['date']}, {Decimal(q['amount']):,.2f} {q['currency']}, payer {q['payer'] or 'none'}) was NOT counted. "
@@ -867,7 +928,11 @@ def confirm(args) -> int:
                             f"{quote(args.invoice)} --payment <id>`, or use `invoice-chaser mark-paid`)" if weak
                             else " (use `invoice-chaser mark-paid` if you checked yourself)"))
     _check_still_valid([entry], meta, lpath, real_today)
-    print(_confirm_all([entry], when, lpath)[0])
+    summaries, changed = _confirm_all([entry], when, lpath)
+    if not changed:
+        print(f"nothing changed: {entry['invoice_id']} already has this confirmation in the ledger")
+        return 1
+    print(summaries[0])
     print(f"recorded -> {lpath.name}\n  re-run `invoice-chaser run` to update the report")
     return 0
 
@@ -895,7 +960,9 @@ def reject(args) -> int:
         else:
             raise ValueError(f"{want!r} is not a payment suggested for {invoice_id} in the last run "
                              f"(known: {', '.join(sorted({k for ks in keys.values() for k in ks})) or 'none'})")
-    record_rejected(_ledger_path(args), invoice_id, key, rows.get(key))
+    if not record_rejected(_ledger_path(args), invoice_id, key, rows.get(key)):
+        print(f"nothing changed: {key} was already rejected for {invoice_id}")
+        return 1
     print(f"rejected: {key} will never be suggested for {invoice_id} again\n  re-run `invoice-chaser run` to update the report")
     return 0
 
@@ -915,7 +982,9 @@ def mark_sent(args) -> int:
     if stage not in STAGES:
         raise ValueError(f"--stage must be one of {', '.join(STAGES)}")
     path = _ledger_path(args)
-    record_sent(path, invoice_id, stage, when)
+    if not record_sent(path, invoice_id, stage, when):
+        print(f"nothing changed: the {stage} reminder for {invoice_id} on {when} is already recorded")
+        return 1
     print(f"recorded: {invoice_id} {stage} reminder sent {when} -> {path}")
     return 0
 
@@ -926,9 +995,9 @@ def mark_paid(args) -> int:
     path = _ledger_path(args)
     existing = ci(load_paid(path)).get(invoice_id.strip().lower())
     if existing:
-        print(f"WARNING: {invoice_id} is already marked paid (on {existing['date']}); nothing changed. "
-              f"Run `invoice-chaser unmark-paid {invoice_id}` first to change it.", file=sys.stderr)
-        return 0
+        print(f"nothing changed: {invoice_id} is already marked paid (on {existing['date']}). "
+              f"Run `invoice-chaser unmark-paid {invoice_id}` first to change it.")
+        return 1
     snapshot = {}
     status = Path(args.out) / "status.csv"
     if status.exists():
@@ -936,7 +1005,9 @@ def mark_paid(args) -> int:
             for row in csv.DictReader(fh):
                 if row["invoice_id"].lower() == invoice_id.lower():
                     snapshot = {"client": row["client"], "amount": row["amount"], "currency": row["currency"], "due": row["due"]}
-    record_paid(path, invoice_id, when, args.note or "", snapshot, (), source="mark-paid")
+    if not record_paid(path, invoice_id, when, args.note or "", snapshot, (), source="mark-paid"):
+        print(f"nothing changed: {invoice_id} is already marked paid")
+        return 1
     print(f"recorded: {invoice_id} confirmed paid on {when} -> {path}")
     print("  re-run `invoice-chaser run` to update the report")
     return 0
@@ -945,9 +1016,33 @@ def mark_paid(args) -> int:
 def unmark_paid(args) -> int:
     path = _ledger_path(args)
     if not unrecord_paid(path, args.invoice):
-        raise ValueError(f"{args.invoice} is not marked paid in {path}")
+        raise ValueError(f"nothing changed: {args.invoice} is not marked paid in {path}")
     print(f"removed: {args.invoice} is no longer marked paid -> {path}")
     print("  re-run `invoice-chaser run` to update the report")
+    return 0
+
+
+def unbind(args) -> int:
+    """`invoice-chaser unbind INV PAYMENT`: the payment does not back this invoice. Its confirmation is removed (the invoice goes back
+    to a fresh suggestion); the other invoice that the payment backs, if any, keeps its confirmation."""
+    lpath = _ledger_path(args)
+    data = read_ledger(lpath)
+    want = args.invoice.strip().lower()
+    entry = next((e for section in ("paid", "received") for k, e in data[section].items() if k.strip().lower() == want), None)
+    bound = list(entry.get("payments", [])) if entry else []
+    named = args.payment.strip().lower()
+    hits = [k for k in bound if k.lower() == named or k.split(":", 1)[-1].lower() == named]
+    if not hits:
+        print(f"nothing changed: {args.invoice} is not confirmed with payment {args.payment} "
+              f"(it is backed by: {', '.join(bound) or 'no payment'})")
+        return 1
+    if len(hits) > 1:
+        raise ValueError(f"{args.payment!r} matches {len(hits)} payments for {args.invoice}: give the source in front: {', '.join(hits)}")
+    if not unbind_payment(lpath, args.invoice, hits[0]):
+        print(f"nothing changed: {args.invoice} is not confirmed with payment {hits[0]}")
+        return 1
+    print(f"unbound: payment {hits[0]} no longer backs {args.invoice}; its confirmation was removed, so it goes back to a fresh suggestion\n"
+          f"  re-run `invoice-chaser run` to update the report")
     return 0
 
 
@@ -958,54 +1053,83 @@ def ledger_reset(args) -> int:
     return 0
 
 
-def _load_orphans(out: Path) -> list[dict]:
-    f = out / "orphans.json"
-    if not f.exists():
-        raise ValueError(f"{f.name} not found in {out}: run `invoice-chaser run` first")
+def _current_orphans(out: Path, lpath: Path) -> list[dict]:
+    """The orphaned decisions as the exports are NOW: the last run's inputs are re-read and matched against the ledger at run time.
+    Nothing is taken from a saved orphans.json, so a candidate that has since gone away is never offered."""
     try:
-        return json.loads(f.read_text(encoding="utf-8-sig"))["orphans"]
-    except (ValueError, KeyError, TypeError) as e:
-        raise ValueError(f"{f.name} is not readable ({e}); run `invoice-chaser run` again") from e
+        recorded = json.loads((out / "local-state.json").read_text(encoding="utf-8-sig"))["args"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(f"no record of a run in {out} (local-state.json): run `invoice-chaser run` first") from None
+    ns = argparse.Namespace(**recorded)
+    cfg = load_config(ns.config)
+    invoices, payments, _ = _load_exports(ns, cfg)
+    id_index = IdIndex((i.id for i in invoices), cfg.ref_prefixes)
+    return _find_orphans(lpath, payments, invoices, id_index, {_pkey(p) for p in payments})
 
 
-def _find_orphan(orphans: list[dict], old: str) -> dict:
-    hits = [o for o in orphans if o["old"].lower() == old.lower()]
-    if not hits:  # an unqualified payment id: wise:ID can be given as ID if that is unambiguous
-        hits = [o for o in orphans if o["kind"] == "payment" and o["old"].split(":", 1)[-1].lower() == old.lower()]
-    if len(hits) > 1:
-        raise ValueError(f"{old!r} matches several orphaned decisions: {', '.join(o['old'] for o in hits)}: give the source in front")
-    if not hits:
-        raise ValueError(f"{old!r} is not an orphaned decision in the last run (they are listed as ORPHANED_DECISION warnings)")
-    return hits[0]
+def _invoice_orphans(orphans: list[dict], old: str) -> list[dict]:
+    """Orphans are keyed by kind + old + new: identical invoices renamed X1 and X2 give two rows for the same old id."""
+    return [o for o in orphans if o["kind"] == "invoice" and o["old"].strip().lower() == old.strip().lower()]
+
+
+def _payment_orphans(orphans: list[dict], old: str) -> list[dict]:
+    want = old.strip().lower()
+    hits = [o for o in orphans if o["kind"] == "payment" and (o["old"].lower() == want or o["old"].split(":", 1)[-1].lower() == want)]
+    olds = sorted({o["old"] for o in hits})
+    if len(olds) > 1:
+        raise ValueError(f"{old!r} matches several orphaned decisions: {', '.join(olds)}: give the source in front")
+    return hits
+
+
+def orphans_cmd(args) -> int:
+    """List the pending orphaned decisions, found in the exports as they are now, with the exact commands that resolve each."""
+    found = _current_orphans(Path(args.out), _ledger_path(args))
+    if not found:
+        print("no pending orphaned decisions: nothing to rebind or forget")
+        return 0
+    for o in found:
+        print("  " + _orphan_text(o))
+    print(f"  {len(found)} pending. Nothing is re-bound automatically: run one of the commands above (then `invoice-chaser run`)")
+    return 0
 
 
 def rebind(args) -> int:
-    """The explicit, checked way to attach a decision to a payment (or an invoice) that now has another id."""
-    out = Path(args.out)
+    """The explicit, checked way to attach a decision to a payment (or an invoice) that now has another id. Candidates come from the
+    exports as they are now; a target that already has a decision is refused (nothing is overwritten)."""
     lpath = _ledger_path(args)
-    real_today = date.fromisoformat(args.today) if getattr(args, "today", None) else date.today()
-    _, meta = _load_suggestions(out)
-    _check_still_valid([], meta, lpath, real_today)
-    o = _find_orphan(_load_orphans(out), args.old.strip())
-    if o["kind"] == "invoice":
-        if args.new.strip().lower() != o["new"].strip().lower():
-            raise ValueError(f"refused: the invoice with the same client, amount and due date is {o['new']}, not {args.new!r}")
-        rename_invoice(lpath, o["old"], o["new"])
+    orphans = _current_orphans(Path(args.out), lpath)
+    inv = _invoice_orphans(orphans, args.old)
+    if inv:
+        pick = [o for o in inv if o["new"].strip().lower() == args.new.strip().lower()]
+        if not pick:
+            raise ValueError(f"refused: the invoice with the same client, amount and due date as {inv[0]['old']} is "
+                             f"{' or '.join(o['new'] for o in inv)}, not {args.new!r}")
+        o = pick[0]
+        if not rename_invoice(lpath, o["old"], o["new"]):
+            print(f"nothing changed: no decisions about {o['old']} are in the ledger")
+            return 1
         print(f"rebound: your decisions about invoice {o['old']} now belong to {o['new']}\n  re-run `invoice-chaser run` to update the report")
         return 0
+    pay = _payment_orphans(orphans, args.old)
+    if not pay:
+        raise ValueError(f"{args.old!r} is not an orphaned decision in the current exports (`invoice-chaser orphans` lists them)")
+    cands = {c["key"]: c for o in pay for c in o["candidates"]}
     want = args.new.strip().lower()
-    hits = [c for c in o["candidates"] if c["key"].lower() == want or c["id"].lower() == want]
+    hits = [c for c in cands.values() if c["key"].lower() == want or c["id"].lower() == want]
     if len(hits) > 1:
         raise ValueError(f"{args.new!r} matches several current payments: {', '.join(c['key'] for c in hits)}: give the source in front")
     if not hits:
-        raise ValueError(f"{args.new!r} is not one of the look-alike payments found for {o['old']} "
-                         f"({', '.join(c['key'] for c in o['candidates'])})")
+        raise ValueError(f"{args.new!r} is not one of the look-alike payments found for {pay[0]['old']} "
+                         f"({', '.join(cands) or 'none'})")
     c = hits[0]
     if c["verdict"] != "ok":
         raise ValueError(f"refused: {c['verdict']}. {c['key']} is not safe to treat as the payment you decided about. "
-                         f"If you are sure it is wrong to keep the old decision: `invoice-chaser forget {quote(o['old'])}`")
-    rebind_keys(lpath, {o["old"]: c["key"]})
-    print(f"rebound: your {o['decision']} decision about {o['old']} now applies to {c['key']}\n  re-run `invoice-chaser run` to update the report")
+                         f"If you are sure it is wrong to keep the old decision: `invoice-chaser forget {quote(pay[0]['old'])}`")
+    old_key = pay[0]["old"]
+    if not rebind_keys(lpath, {old_key: c["key"]}):
+        print(f"nothing changed: {old_key} already points at {c['key']}")
+        return 1
+    print(f"rebound: your {pay[0]['decision']} decision about {old_key} now applies to {c['key']}\n  re-run `invoice-chaser run` to update the report")
     return 0
 
 
@@ -1014,18 +1138,28 @@ def forget(args) -> int:
     lpath = _ledger_path(args)
     old = args.old.strip()
     try:
-        o = _find_orphan(_load_orphans(out), old)
+        orphans = _current_orphans(out, lpath)
     except ValueError:
         if not args.force:
             raise
-        o = {"kind": "invoice" if ":" not in old else "payment", "old": old}
-    if o["kind"] == "invoice":
-        done = forget_invoice(lpath, o["old"])
+        orphans = []
+    inv = _invoice_orphans(orphans, old)
+    if inv:
+        name, done = inv[0]["old"], forget_invoice(lpath, inv[0]["old"])
     else:
-        done = forget_key(lpath, o["old"])
+        pay = _payment_orphans(orphans, old)
+        if pay:
+            name, done = pay[0]["old"], forget_key(lpath, pay[0]["old"])
+        elif not args.force:
+            raise ValueError(f"{old!r} is not an orphaned decision in the current exports (`invoice-chaser orphans` lists them); "
+                             f"use --force to forget it anyway")
+        else:
+            name = old
+            done = forget_key(lpath, old) if ":" in old else forget_invoice(lpath, old)
     if not done:
-        raise ValueError(f"nothing about {o['old']} is in the ledger")
-    print(f"forgotten: {o['old']} is no longer in your ledger\n  re-run `invoice-chaser run` to update the report")
+        print(f"nothing changed: nothing about {name} is in the ledger")
+        return 1
+    print(f"forgotten: {name} is no longer in your ledger\n  re-run `invoice-chaser run` to update the report")
     return 0
 
 
@@ -1108,6 +1242,16 @@ def build_parser() -> argparse.ArgumentParser:
     um = sub.add_parser("unmark-paid", help="undo a confirm / mark-paid")
     common(um)
     um.set_defaults(fn=unmark_paid)
+
+    ub = sub.add_parser("unbind", help="a payment does NOT back this invoice: remove that confirmation (the other invoice keeps its own)")
+    ub.add_argument("invoice")
+    ub.add_argument("payment", help="payment key (wise:ID) or id, as shown in the PAYMENT_DOUBLE_BOUND warning")
+    common(ub, invoice=False)
+    ub.set_defaults(fn=unbind)
+
+    orp = sub.add_parser("orphans", help="list pending orphaned decisions (found in today's exports) with the exact commands")
+    common(orp, invoice=False)
+    orp.set_defaults(fn=orphans_cmd)
 
     rb = sub.add_parser("rebind", help="attach a decision to the payment (or invoice) that now has another id, after the safety checks")
     rb.add_argument("old")

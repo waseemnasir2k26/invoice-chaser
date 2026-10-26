@@ -34,7 +34,7 @@ def run(tmp_path, today="2026-10-25", out="out", extra=()):
             "--out", str(tmp_path / out), "--today", today]
     if (tmp_path / "w2.csv").exists():
         argv += ["--wise", str(tmp_path / "w2.csv")]
-    assert main(argv + list(extra)) == 0
+    assert main(argv + list(extra)) in (0, 2)
     return {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / out / "status.csv", encoding="utf-8"))}
 
 

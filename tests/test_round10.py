@@ -31,7 +31,7 @@ def run(tmp_path, today="2026-10-25"):
          "--out", str(tmp_path / "out"), "--today", today]
     if (tmp_path / "b.csv").exists():
         a += ["--bank", str(tmp_path / "b.csv"), "--mapping", str(tmp_path / "m.json")]
-    assert main(a) == 0
+    assert main(a) in (0, 2)  # 2 = a CRITICAL notice (exit codes, README)
     return {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / "out" / "status.csv", encoding="utf-8"))}
 
 
@@ -260,7 +260,7 @@ def test_payer_text_cannot_make_a_critical_warning_look_routine(tmp_path, capsys
 def test_a_dropped_invoice_row_is_critical_and_named_by_line_and_id(tmp_path, capsys):
     (tmp_path / "i.csv").write_text(INV_HEAD + "OK-1,Acme,a@b.co,100,USD,2026-09-01,2026-10-01\nINV-77,Evil (negative row(s) ignored),a@b.co,abc,USD,2026-09-01,2026-10-01\n",
                                     encoding="utf-8")
-    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
+    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) in (0, 2)
     err = capsys.readouterr().err
     assert "CRITICAL [INVOICE_ROW_DROPPED]: i.csv line 3 (invoice id 'INV-77')" in err and "DROPPED" in err
     assert "NOTICES" not in err

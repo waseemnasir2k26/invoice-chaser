@@ -27,7 +27,7 @@ def run(tmp_path, invoices, wise=None, extra=(), config=None):
         (tmp_path / "c.json").write_text(json.dumps(config), encoding="utf-8")
         argv += ["--config", str(tmp_path / "c.json")]
     code = main(argv + list(extra))
-    rows = {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / "out" / "status.csv", encoding="utf-8"))} if code == 0 else {}
+    rows = {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / "out" / "status.csv", encoding="utf-8"))} if code in (0, 2) else {}
     return code, rows
 
 
@@ -68,7 +68,7 @@ def test_duplicate_wise_and_bank_row_never_marked_paid_end_to_end(tmp_path):
     mapping.write_text(json.dumps({"date": "When", "credit": "Credit", "currency": "Ccy", "description": "Memo", "payer": "From"}))
     code, rows = run(tmp_path, INV_HEAD + "INV-1,Acme Studio,a@b.co,1000,USD,2026-09-01,2026-10-01\n", wise,
                      ["--bank", str(bank), "--mapping", str(mapping)])
-    assert code == 0 and rows["INV-1"]["status"] == "needs_review"
+    assert code in (0, 2) and rows["INV-1"]["status"] == "needs_review"
     assert "may be the same payment" in rows["INV-1"]["why_not_paid"]
     assert "possible duplicate across sources" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
 
@@ -191,7 +191,7 @@ def test_json_files_with_bom_are_read(tmp_path):
 def test_bad_invoice_row_is_skipped_with_warning_and_strict_aborts(tmp_path, capsys):
     inv = INV_HEAD + "A,Acme,a@b.co,abc,USD,2026-09-01,2026-10-01\nB,Beta,b@b.co,100,USD,2026-09-01,2026-10-01\n"
     code, rows = run(tmp_path, inv)
-    assert code == 0 and list(rows) == ["B"]
+    assert code in (0, 2) and list(rows) == ["B"]
     assert "line 2" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     assert "CRITICAL [INVOICE_ROW_DROPPED]" in capsys.readouterr().err
     code, _ = run(tmp_path, inv, extra=["--strict"])

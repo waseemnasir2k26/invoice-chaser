@@ -123,9 +123,9 @@ def test_unmark_paid_and_second_mark_warns(tmp_path, capsys):
     main(["demo", "--keep-ledger", "--out", str(out)])
     assert main(["mark-paid", "INV-1006", "--out", str(out), "--date", "2026-10-20", "--today", "2026-10-25"]) == 0
     capsys.readouterr()
-    assert main(["mark-paid", "inv-1006", "--out", str(out), "--date", "2026-10-24", "--today", "2026-10-25"]) == 0
-    err = capsys.readouterr().err
-    assert "already marked paid (on 2026-10-20)" in err
+    assert main(["mark-paid", "inv-1006", "--out", str(out), "--date", "2026-10-24", "--today", "2026-10-25"]) == 1   # nothing changed: exit 1
+    err = capsys.readouterr().out + capsys.readouterr().err
+    assert "nothing changed" in err and "already marked paid (on 2026-10-20)" in err
     assert load_paid(out / "sent.json")["INV-1006"]["date"] == "2026-10-20"      # unchanged
     main(["demo", "--keep-ledger", "--out", str(out)])
     assert _status(out)["INV-1006"]["status"] == "paid"

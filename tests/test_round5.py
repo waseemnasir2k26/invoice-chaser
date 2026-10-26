@@ -28,7 +28,7 @@ def setup(tmp_path, invoices, wise):
 def run(tmp_path, today="2026-10-25", out="out"):
     code = main(["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--config", str(tmp_path / "c.json"),
                  "--out", str(tmp_path / out), "--today", today])
-    assert code == 0
+    assert code in (0, 2)
     return {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / out / "status.csv", encoding="utf-8"))}
 
 

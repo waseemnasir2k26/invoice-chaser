@@ -32,7 +32,7 @@ def argv(tmp_path, today="2026-10-25", out="out"):
 
 
 def run(tmp_path, today="2026-10-25", out="out"):
-    assert main(argv(tmp_path, today, out)) == 0
+    assert main(argv(tmp_path, today, out)) in (0, 2)
     return {r["invoice_id"]: r for r in csv.DictReader(open(tmp_path / out / "status.csv", encoding="utf-8"))}
 
 
@@ -233,7 +233,7 @@ def test_warnings_become_one_summary_with_counts(tmp_path, capsys):
     (tmp_path / "i.csv").write_text(INV_HEAD + "INV-1,Acme,a@b.co,1000,USD,2026-09-01,2026-10-01\nBAD,x,a@b.co,abc,USD,2026-09-01,2026-10-01\n", encoding="utf-8")
     (tmp_path / "w.csv").write_text(WISE_HEAD + '"R1","05-10-2026","-250.00","USD","Refund","",""\n"R2","05-10-2026","-9.00","USD","fee","",""\n', encoding="utf-8")
     capsys.readouterr()
-    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) == 0
+    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]) in (0, 2)
     err = capsys.readouterr().err
     assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err
     assert "CRITICAL [INVOICE_ROW_DROPPED]: i.csv line 3 (invoice id 'BAD')" in err            # a dropped invoice is never "routine"

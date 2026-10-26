@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.7 - 2026-10-26
+
+Ledger invariants, checked on every run and before every write.
+
+- **A payment backs one invoice.** If the ledger ever has one payment key behind two invoices, `run` raises a CRITICAL `PAYMENT_DOUBLE_BOUND` warning naming both, holds both (no reminder, not counted paid, shown as `held:`), and prints `invoice-chaser unbind <invoice> <payment>` for each. New command `unbind` removes one invoice's confirmation for that payment (the invoice goes back to a fresh suggestion; the other keeps its own). `confirm` and `rebind` refuse a payment that already backs any invoice. A write that would add a second binding is refused and writes nothing.
+- **Every ledger write is read back.** The file is re-read after the write and must show the change. A command that changes nothing (a repeated `mark-sent`, `reject`, `mark-paid`, `forget` of something absent) prints `nothing changed` and exits 1.
+- **`rebind` and `forget` look at today's exports**, not at a saved `orphans.json`: the last run's inputs are re-read at the moment you run the command. Orphans are keyed by kind, old id and new id, so identical invoices renamed `X1` and `X2` can both be candidates: `rebind INV-A X1` takes one and drops the other. New command `orphans` lists the pending ones with their exact commands.
+- **Nothing is overwritten.** A rename or rebind whose target already has a decision (a confirmation, rejection, sent reminder, or a payment already bound or rejected) is refused with the reason.
+- **Exit code 2 when a CRITICAL notice exists.** `run` returns 2 whenever any critical notice is raised (documented in the README under Exit codes). A held invoice is shown as `held: <reason>` where it used to show `0d`.
+- `generated_on` in `suggestions.json` and `orphans.json` follows `--today` (it used the wall clock, so a run dated in the past could not be confirmed).
+
 ## 1.1.6 - 2026-10-25
 
 Simplify: automatic repair was a new way to be wrong, so it is gone.
