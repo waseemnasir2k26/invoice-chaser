@@ -237,4 +237,5 @@ def test_readme_states_adversarial_count():
     found = re.findall(r"never suggests paid on a near match\D{0,60}?([\d,]+) adversarial cases", readme, re.I)
     assert len(found) >= 1, "README headline missing: 'never suggests paid on a near match: N adversarial cases in the test suite'"
     executed = run_all()[0]
+    print(f"adversarial cases executed: {executed:,} (README says {found[0]})")
     assert {int(n.replace(",", "")) for n in found} == {executed}, f"README must say {executed:,}"

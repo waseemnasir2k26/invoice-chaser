@@ -127,8 +127,15 @@ def test_payment_double_bound_gets_no_client_draft(tmp_path, capsys):
 def test_no_client_draft_rule_for_double_bound_and_double_counted_payments():
     from datetime import date as d
     from decimal import Decimal
-    from invoice_chaser.cli import _no_client_draft
+    from invoice_chaser.cli import _build_holds
+    from invoice_chaser.gate import client_draft_allowed
     from invoice_chaser.models import Invoice, InvoiceResult, Match
+
+    def _no_client_draft(r, double_held):
+        # 1.1.10: the gate decides; '' = a CHECK FIRST draft may be written
+        holds, gate = _build_holds([r], [], double_held, [r.invoice], {}, {})
+        ok, reason = client_draft_allowed(r.invoice, gate, holds)
+        return "" if ok else reason
 
     def held(suspect=""):
         i = Invoice("INV-9", "Client", "c@x.example", Decimal("300"), "USD", d(2026, 6, 1), d(2026, 7, 1))

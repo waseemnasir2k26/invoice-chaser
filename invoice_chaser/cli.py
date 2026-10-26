@@ -26,6 +26,7 @@ from .dedupe import (
     row_matches,
 )
 from .drafts import CHECK_FIRST_DIR, valid_email, write_drafts
+from .gate import Hold, client_draft_allowed, same_money
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
     apply_confirmations,
@@ -75,6 +76,8 @@ SEEN_SCHEMA = 1
 HELD = ("suggested_paid", "partial_suggested", "needs_review")  # statuses that wait for your decision
 # a payment that may be counted twice (another export, or a re-export of a confirmed payment): the money may already have arrived
 DOUBLE_COUNT = re.compile(r"two exports|may be the same payment|possible repeat of a payment|identical payment found")
+REFUND_NAME = "client name contains a refund word"  # Match.blocker text when a refund-looking client name is the reason
+STUCK_HOLD_KINDS = ("double_count", "refund_name")  # holds where the money may have arrived: CRITICAL STUCK_HOLD past the stuck window
 CHECK_SNAPSHOT = True  # tests switch this off to prove the snapshot check is what catches a changed invoice
 
 
@@ -343,6 +346,7 @@ def run(args) -> int:
         notes.append("note: --llm is set but neither GROQ_API_KEY nor GEMINI_API_KEY was found; "
                      "templates are used as written")
 
+    holds, gate_ledger = _build_holds(results, orphans, double_held, invoices, paid_marks, received_marks)
     items = []
     for r in results:
         entries = ledger.get(r.invoice.id.strip().lower())
@@ -354,32 +358,9 @@ def run(args) -> int:
             r.draft_status = "no draft: check the possible payment first"
         if not r.stage or r.status not in ("overdue", "partial"):
             continue
-        inv = r.invoice
-        if not inv.email:
-            r.draft_status = "missing email"
-        elif not valid_email(inv.email):
-            r.draft_status = "invalid email"
-        if r.draft_status:
-            _warn(warnings, "EMAIL_MISSING", f"{inv.id} ({inv.client}): {r.draft_status}, no draft written for the {r.stage} reminder")
-            continue
-        hs = highest_sent(entries)
-        if hs and hs[0] >= STAGES.index(r.stage):
-            nxt = STAGES.index(r.stage) + 1
-            when = f"; next stage {STAGES[nxt]} in {cfg.stage_days[nxt] - r.days_overdue} day(s)" if nxt < len(STAGES) else ""
-            r.draft_status = f"no draft: {hs[1]} already sent {hs[2]}{when}"
-            continue
-        line = ""
-        if args.llm and llm_keys:
-            v = variables_for(r, cfg.sender_name, cfg.payment_details)
-            line = personal_line(v["first_name"], v["outstanding"], r.days_overdue, inv.id) or ""
-        v = variables_for(r, cfg.sender_name, cfg.payment_details, line,
-                          reply_days=cfg.reply_within_days, last_reminder=r.last_reminder)
-        flags = flags_for(r.stage, cfg.previous_reminders, r.last_reminder, cfg.pause_work_on_final)
-        subject, body = render(load_template(r.stage, cfg.tone, templates_dir), v, flags)
-        items.append({"invoice_id": inv.id, "stage": r.stage, "to": inv.email,
-                      "from_name": cfg.sender_name, "from_email": cfg.sender_email,
-                      "subject": subject, "body": body})
-        r.draft_status = "drafted"
+        item = _client_item(r, r.stage, cfg, args, templates_dir, llm_keys, entries, orphans, warnings, holds, gate_ledger, check_first=False)
+        if item is not None:
+            items.append(item)
 
     stuck = sorted((r for r in results if r.stuck), key=lambda r: -r.days_overdue)
     n_client = len(items)
@@ -387,21 +368,36 @@ def run(args) -> int:
         items.append(_check_item(r, cfg, _out_hint(args.out)))
         r.draft_status = "no client draft; STUCK: internal note drafted for you"
     # a held invoice that has waited long enough AND is far enough overdue also gets the normal client reminder for its stage,
-    # written to drafts/check-first/ with CHECK FIRST in the subject and body. Never for a double-bound or double-counted payment.
+    # written to drafts/check-first/ with CHECK FIRST in the subject and body. Every client draft passes client_draft_allowed first.
     check_first: list[dict] = []
     for r in results:
         if r.status not in HELD or not (r.waiting_days > cfg.stuck_after_days and r.days_overdue > cfg.stuck_overdue_days):
             continue
         prefix = "STUCK: internal note drafted for you; " if r.stuck else ""
-        blocked = _no_client_draft(r, double_held)
-        if blocked:
-            r.draft_status = f"{prefix}no client draft: {blocked}"
-            continue
-        it = _check_first_item(r, cfg, args, templates_dir, llm_keys, ledger.get(r.invoice.id.strip().lower()), orphans, warnings)
+        it = _check_first_item(r, cfg, args, templates_dir, llm_keys, ledger.get(r.invoice.id.strip().lower()), orphans, warnings,
+                               holds, gate_ledger)
         r.draft_status = prefix + r.draft_status
         if it:
             check_first.append(it)
     items.extend(check_first)
+    # M1: a hold where the money may have arrived (possible double count, or a refund-looking client name) that has passed the stuck
+    # window never gets a client reminder, and is reported on every run: CRITICAL STUCK_HOLD, exit code 2.
+    for r in results:
+        if r.status not in HELD or not r.stuck:
+            continue
+        key = r.invoice.id.strip().lower()
+        kinds = {h.kind for h in holds if h.invoice == key}
+        if not kinds & set(STUCK_HOLD_KINDS):
+            continue
+        if {"double_count", "refund_name"} <= kinds:
+            why = "a possible double count of another payment, and a client name that contains a refund word"
+        elif "double_count" in kinds:
+            why = "a possible double count of another payment"
+        else:
+            why = "a client name that contains a refund word"
+        _warn(warnings, "STUCK_HOLD", f"{r.invoice.id} ({r.invoice.client}) is {r.days_overdue} days overdue and has waited {r.waiting_days} day(s) "
+                                      f"because of {why}. No client reminder is drafted: the money may have arrived. Next step: check your bank "
+                                      f"statement, then `invoice-chaser confirm`, `reject` or `mark-paid {quote(r.invoice.id)}`.")
 
     out.mkdir(parents=True, exist_ok=True)
     settled = {r.invoice.id.lower() for r in results if r.status in ("paid", "void")}
@@ -671,17 +667,33 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
     atomic_write_text(seen_file, json.dumps({"schema": SEEN_SCHEMA, "invoices": now}, indent=2, sort_keys=True))
 
 
-def _no_client_draft(r, double_held: dict) -> str:
-    """Why a held invoice gets no client reminder even when it is stuck ("" = it may get a CHECK FIRST one).
-    A ledger confirmation or mark-paid blocks every client draft (normal or CHECK FIRST) while the invoice is held:
-    you already said it was paid, so the only thing to send you is the internal note."""
-    if r.confirmed_on:
-        return f"you confirmed it paid on {r.confirmed_on}, so the money may have arrived"
-    if r.invoice.id.strip().lower() in double_held:
-        return "a payment backs two invoices (PAYMENT_DOUBLE_BOUND): the money may have arrived"
-    if any(DOUBLE_COUNT.search(m.suspect or "") for m in (r.matches or r.suggestions)):
-        return "the possible payment may be a double count of another payment: the money may have arrived"
-    return ""
+def _build_holds(results, orphans: list[dict], double_held: dict, invoices, paid_marks: dict, received_marks: dict):
+    """Every reason an invoice waits for you, as Hold records, plus the confirmations the gate reads. Built once per run, after every
+    status is final. client_draft_allowed decides from these; nothing else decides whether a client may be written to."""
+    holds: list[Hold] = []
+    for o in orphans:
+        holds.append(Hold("orphan", "", frozenset(h.strip().lower() for h in o["hold"]), _orphan_text(o)))
+    for inv, reason in double_held.items():
+        holds.append(Hold("double_bound", inv, frozenset({inv}),
+                          "a payment backs two invoices (PAYMENT_DOUBLE_BOUND): the money may have arrived"))
+    for r in results:
+        key = r.invoice.id.strip().lower()
+        if r.status in HELD:
+            holds.append(Hold("review", key, frozenset({key}), r.why_not_paid or r.note))
+        cands = list(r.matches) + list(r.suggestions)
+        if any(DOUBLE_COUNT.search(m.suspect or "") for m in cands):
+            holds.append(Hold("double_count", key, frozenset({key}),
+                              "a possible double count of another payment: the money may have arrived"))
+        if any(REFUND_NAME in (m.blocker or "") for m in cands):
+            holds.append(Hold("refund_name", key, frozenset({key}),
+                              "its client name contains a refund word, so the payment may be a refund: the money may have arrived"))
+    invoice_ids = {i.id.strip().lower() for i in invoices}
+    gate_ledger: dict[str, dict] = {}
+    for kind, marks in (("paid", paid_marks), ("received", received_marks)):
+        for key, e in marks.items():
+            gate_ledger.setdefault(key, {"kind": kind, "date": e.get("date", ""), "snapshot": e.get("snapshot") or {},
+                                         "gone": key not in invoice_ids})
+    return holds, gate_ledger
 
 
 def _possible_payment(r, orphans: list[dict]) -> str:
@@ -695,23 +707,39 @@ def _possible_payment(r, orphans: list[dict]) -> str:
     return "a payment you decided about, see review.html"
 
 
-def _check_first_item(r, cfg, args, templates_dir, llm_keys: bool, entries, orphans: list[dict], warnings: list) -> dict | None:
-    """The normal client reminder for the invoice's stage, marked CHECK FIRST. Same send-blockers as an ordinary draft."""
-    inv = r.invoice
+def _check_first_item(r, cfg, args, templates_dir, llm_keys: bool, entries, orphans: list[dict], warnings: list, holds, gate_ledger) -> dict | None:
+    """The normal client reminder for the invoice's stage, marked CHECK FIRST. Same gate and send-blockers as an ordinary draft."""
     stage = stage_for(r.days_overdue, cfg.stage_days)
     if stage is None:
         r.draft_status = "no check-first draft: not yet due for a reminder"
         return None
-    if not inv.email:
-        r.draft_status = "missing email"
-    elif not valid_email(inv.email):
-        r.draft_status = "invalid email"
-    if r.draft_status in ("missing email", "invalid email"):
-        _warn(warnings, "EMAIL_MISSING", f"{inv.id} ({inv.client}): {r.draft_status}, no check-first draft written")
+    return _client_item(r, stage, cfg, args, templates_dir, llm_keys, entries, orphans, warnings, holds, gate_ledger, check_first=True)
+
+
+def _client_item(r, stage, cfg, args, templates_dir, llm_keys: bool, entries, orphans: list[dict], warnings: list, holds, gate_ledger,
+                 check_first: bool) -> dict | None:
+    """THE one place a client-addressed draft is built (ordinary and CHECK FIRST). The gate runs first, every time."""
+    inv = r.invoice
+    allowed, reason = client_draft_allowed(inv, gate_ledger, holds)
+    if not allowed:
+        r.draft_status = f"no client draft: {reason}"
+        return None
+    if not inv.email or not valid_email(inv.email):
+        problem = "missing email" if not inv.email else "invalid email"
+        r.draft_status = problem
+        if check_first:
+            _warn(warnings, "EMAIL_MISSING", f"{inv.id} ({inv.client}): {problem}, no check-first draft written")
+        else:
+            _warn(warnings, "EMAIL_MISSING", f"{inv.id} ({inv.client}): {problem}, no draft written for the {stage} reminder")
         return None
     hs = highest_sent(entries)
     if hs and hs[0] >= STAGES.index(stage):
-        r.draft_status = f"no check-first draft: {hs[1]} already sent {hs[2]}"
+        if check_first:
+            r.draft_status = f"no check-first draft: {hs[1]} already sent {hs[2]}"
+        else:
+            nxt = STAGES.index(stage) + 1
+            when = f"; next stage {STAGES[nxt]} in {cfg.stage_days[nxt] - r.days_overdue} day(s)" if nxt < len(STAGES) else ""
+            r.draft_status = f"no draft: {hs[1]} already sent {hs[2]}{when}"
         return None
     line = ""
     if args.llm and llm_keys:
@@ -720,10 +748,13 @@ def _check_first_item(r, cfg, args, templates_dir, llm_keys: bool, entries, orph
     v = variables_for(r, cfg.sender_name, cfg.payment_details, line, reply_days=cfg.reply_within_days, last_reminder=r.last_reminder)
     flags = flags_for(stage, cfg.previous_reminders, r.last_reminder, cfg.pause_work_on_final)
     subject, body = render(load_template(stage, cfg.tone, templates_dir), v, flags)
+    base = {"invoice_id": inv.id, "stage": stage, "to": inv.email, "from_name": cfg.sender_name, "from_email": cfg.sender_email}
+    if not check_first:
+        r.draft_status = "drafted"
+        return {**base, "subject": subject, "body": body}
     head = f"CHECK FIRST: a possible payment was found ({_possible_payment(r, orphans)}). Verify it before sending this."
     r.draft_status = f"CHECK FIRST reminder drafted in {CHECK_FIRST_DIR}/ (verify the possible payment first)"
-    return {"invoice_id": inv.id, "stage": stage, "to": inv.email, "from_name": cfg.sender_name, "from_email": cfg.sender_email,
-            "subject": "[CHECK FIRST] " + subject, "body": head + "\n\n" + body, "check_first": True}
+    return {**base, "subject": "[CHECK FIRST] " + subject, "body": head + "\n\n" + body, "check_first": True}
 
 
 def _check_item(r, cfg, out_hint: str) -> dict:
@@ -1089,6 +1120,29 @@ def mark_sent(args) -> int:
     return 0
 
 
+def _same_payment_warnings(path: Path, invoice_id: str, snapshot: dict) -> list[str]:
+    """M2: a confirmed payment with this invoice's client and amount that already backs ANOTHER invoice. A warning only: you may override."""
+    client = str(snapshot.get("client", "")).strip().casefold()
+    if not client or not snapshot.get("amount"):
+        return []
+    me = invoice_id.strip().lower()
+    snaps: dict[str, dict] = {}
+    for marks in (load_paid(path), load_received(path)):
+        for inv, e in marks.items():
+            snaps.setdefault(inv.strip().lower(), e.get("snapshot") or {})
+    out = []
+    for row in load_payment_rows(path):
+        other = row["invoice"].strip().lower()
+        s = snaps.get(other, {})
+        if other == me or str(s.get("client", "")).strip().casefold() != client:
+            continue
+        if same_money(row.get("amount"), snapshot["amount"]) and str(row.get("currency", "")) == str(snapshot.get("currency", "")):
+            out.append(f"WARNING: payment {row.get('key')} ({row.get('amount')} {row.get('currency')}, {row.get('date')}, payer {row.get('payer') or 'none'}) "
+                       f"already backs {row['invoice']}, for the same client and amount as {invoice_id}. A payment backs one invoice. If it is a "
+                       f"second payment, carry on; if not, do not mark {invoice_id} paid with it (`invoice-chaser unmark-paid` undoes a mark-paid).")
+    return out
+
+
 def mark_paid(args) -> int:
     """You checked yourself (no suggested payment needed). Stores a snapshot of the invoice as in status.csv."""
     invoice_id, when = _resolve_invoice(args)
@@ -1105,6 +1159,8 @@ def mark_paid(args) -> int:
             for row in csv.DictReader(fh):
                 if row["invoice_id"].lower() == invoice_id.lower():
                     snapshot = {"client": row["client"], "amount": row["amount"], "currency": row["currency"], "due": row["due"]}
+    for line in _same_payment_warnings(path, invoice_id, snapshot):
+        print(line)
     if not record_paid(path, invoice_id, when, args.note or "", snapshot, (), source="mark-paid"):
         print(f"nothing changed: {invoice_id} is already marked paid")
         return 1

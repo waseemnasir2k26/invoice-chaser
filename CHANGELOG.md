@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.10 - 2026-10-26
+
+One gate for every client draft, and the stuck-hold cases that were still silent.
+
+- **One gate (`client_draft_allowed`, `invoice_chaser/gate.py`).** Every client-addressed draft, normal reminders and CHECK FIRST alike, is built by one function that asks the gate first. The gate refuses when: the invoice id (any capitals) has a confirmation or mark-paid while held; an orphaned decision names the invoice; the invoice is held as PAYMENT_DOUBLE_BOUND, a possible double count, or a refund-looking client name; or a confirmed invoice whose old id is gone has the same client, amount and currency. The 1.1.9 blocker is closed: INV-A confirmed on 2026-09-20 and renamed INV-A2 gets no client draft (normal or CHECK FIRST) when run on 2027-06-30. A structural test fails if a new function builds a client draft without asking the gate, and a monkeypatched gate writes zero client drafts across a scenario with every hold type.
+- **A part-payment is not blocked.** A confirmed part-payment still gets its normal reminder, unless the invoice is held.
+- **Renamed confirmed invoices are matched by snapshot only when the old id is gone.** A live invoice with an identical twin is never blocked.
+- **STUCK_HOLD (critical).** A held invoice whose hold is a possible double count or a refund-looking client name, past the stuck window, gets no client reminder and prints `CRITICAL [STUCK_HOLD]` naming the invoice and days overdue on every run; `run` exits 2.
+- **mark-paid warns.** If a confirmed payment with the same client and amount already backs another invoice, `mark-paid` prints a warning first. It does not block; the override is allowed.
+- **Verifiable count.** `pytest -s` on the adversarial README test prints the measured case count.
+
 ## 1.1.9 - 2026-10-26
 
 Judge review fixes: a confirmed payment is never chased, and held invoices show their real age.

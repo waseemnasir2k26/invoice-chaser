@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "invoice-chaser"
-version = "1.1.9"
+version = "1.1.10"
 description = "Match incoming payments to open invoices and draft polite, escalating reminders. Local, file-based, never sends."
 readme = "README.md"
 requires-python = ">=3.10"
