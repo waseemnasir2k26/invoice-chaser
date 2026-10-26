@@ -83,8 +83,10 @@ _EXTRA_DASHES = frozenset("−﹘﹣－")
 
 
 def _map_chars(s: str) -> str:
-    """NFKC, every dash to "-", every space-like character (Zs) to " ", invisible characters (Cf) removed. No case change."""
-    if (s or "").isascii():  # fast path: ASCII has no Cf and its only Zs is the space; NFKC and dashes are identity/"-" already
+    """NFKC, every dash to "-", every space-like character (Zs) to " ", invisible characters (Cf) removed, every other decimal
+    digit (Arabic-Indic, Devanagari, ...) to its ASCII value (1.1.16). No case change. The ONE mapping: ingest, CLI arguments and
+    payment text all go through it."""
+    if (s or "").isascii():  # fast path: ASCII has no Cf, no non-ASCII digit, and its only Zs is the space
         return s or ""
     out = []
     for ch in unicodedata.normalize("NFKC", s or ""):
@@ -93,8 +95,11 @@ def _map_chars(s: str) -> str:
             out.append("-")
         elif cat == "Zs":
             out.append(" ")
-        elif cat != "Cf":
-            out.append(ch)
+        elif cat == "Cf":
+            continue
+        else:
+            dec = unicodedata.decimal(ch, None)
+            out.append(str(dec) if dec is not None else ch)
     return "".join(out)
 
 

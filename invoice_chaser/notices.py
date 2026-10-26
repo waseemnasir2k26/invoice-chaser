@@ -31,6 +31,7 @@ SEVERITY = {
     "EMAIL_MISSING": "warning",
     "DRAFT_STALE": "warning",
     "REJECTION_UNVERIFIED": "warning",
+    "NEAR_AMOUNT": "warning",
     # routine
     "NEGATIVE_ROWS": "routine",
     "ROWS_SKIPPED_STATUS": "routine",

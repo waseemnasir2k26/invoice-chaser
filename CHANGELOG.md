@@ -19,6 +19,15 @@ A payment in another currency that names an invoice id now holds that invoice.
 
 # Changelog
 
+## 1.1.16 - 2026-10-26
+
+Judge round 8: one normaliser for every Unicode digit, a split number holds its invoice, and an unidentified payment near an open invoice holds it.
+
+- **Every Unicode decimal digit is ASCII (blocker).** `INV-١١٠٣` (Arabic-Indic) and `INV-1103` are the same id. The mapping is one function in `decision._map_chars` (after NFKC, dashes and spaces): ingest, CLI arguments and payment text all use it.
+- **Digits split by spaces, dots or dashes hold the invoice (blocker).** The safety net also reads the digit skeleton of a payment: `INV-1 103`, `INV-11 03`, `INV-11.03` mention 1103 and hold that invoice with "a payment mentions 1103: check it". Never a suggestion, never a reminder in `drafts/`. Strict matching is unchanged.
+- **NEAR_AMOUNT (major).** An unidentified payment (no invoice id, no client match) in the same currency, within the larger of 3% of an open invoice's outstanding amount or 5 units, holds that invoice: `needs_review`, `NEAR_AMOUNT` printed on every run, with the exact `confirm --payment` and `reject` commands. The reminder goes to `drafts/check-first/` after the stuck window, never to `drafts/`. Not held: a payment already matched or confirmed for another invoice, or one you rejected for this invoice. A 786.00 stranger holds an 800.00 invoice; a 400.00 stranger does not.
+- Existing tests: unchanged. A bulk-review invoice (more than 20 same-amount payments) keeps its bulk reason in `why_not_paid` when a NEAR_AMOUNT candidate is also listed.
+
 ## 1.1.13 - 2026-10-26
 
 Held invoices that are far overdue can no longer wait silently, drafts show the real amount, and a second payment needs `--force`.

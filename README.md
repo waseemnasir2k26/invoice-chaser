@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.15  as of 2026-10-25
+invoice-chaser 1.1.16  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -111,6 +111,8 @@ Strong evidence, which becomes a suggestion, exists in exactly two forms.
 | The text | it names no other invoice, and no id-like token (INV-9999) that is missing from your invoice list | it names no invoice at all |
 | Never | refund, failure or non-receipt wording (below) | the same; and no other invoice of that client at the same price (settled ones count), and no second client with the same name |
 
+Digits are digits in any script: `INV-١١٠٤` (Arabic-Indic) and `INV-1104` are the same id, at import, in command arguments and in payment text. A safety net also reads the digit skeleton of a payment: digits joined by single spaces, dots or dashes (`INV-1 103`, `INV-11.03`) mention invoice 1103, and hold it (see the safety net in 1.1.15) without ever naming it as paid.
+
 What "whole token" means: `INV-1004`, `inv 1004`, `INV#1004`, `(INV-1004)`, `INV-1004.` all count. `INV-1004/2`, `INV-1004.5`, `INV-1004-2`, `INV-1004A`, `XINV-1004`, `INV-10040` and `INV 1004 2` do not. The description and the payer are searched separately, never glued together, and ids inside e-mail addresses and URLs do not count. An id must look like an id: at least 2 letters and 2 digits (`INV-12`, `AB1234`), or start with a prefix in `ref_prefixes` (default `INV` and `INVOICE`, so `INV-1` works); an all-digit id needs 4+ digits and a configured prefix (`INV 2026001`). `A7`, `B2`, `5` and `2024` never count, so "Vitamin B2" and "Deposit for 5 hours" cannot point at an invoice.
 
 Wording that disqualifies a payment: refund, reversal, failure and non-receipt words in about twenty languages (list below, generated from the code, so it cannot drift). It is a long list, not a complete one: anything that slips past it still only becomes a suggestion that you confirm. Short words match only as whole words, so a client called Stornoway, Returnly, Voidstar, Kreditech, Re or Un is not mistaken for a refund. The client's name is never cut out of the text. A client whose own name contains one of these words (Refund Ltd, Pending Ventures, Chargebacks911) is never matched automatically: the row says "client name contains a refund word: please check".
@@ -140,6 +142,8 @@ Everything else is **needs review**: no suggestion to confirm, no reminder draft
 - a payment dated before the invoice was issued, far after it, or in the future. Never dropped silently: listed in `review.html` as "payments outside the invoice date window (check date format)", because a day/month mix-up is the usual cause. Use `--date-format dmy|mdy|ymd`; if every date in a file could be read either way, you get a warning.
 
 **Shared prices.** If you charge everyone 500 and a stranger's 500 arrives with no invoice id, that payment could belong to any of your clients. The tool does not guess and does not chase: the invoice goes to **needs review**, with the payer named in the reason. With more than 20 payments of the same amount and nothing identifying yours, it says so in one line instead of listing them. The cost is a few extra rows to look at; the alternative is a reminder to a client who already paid.
+
+**Near amounts (1.1.16).** A payment that names no invoice and no client, is in the same currency as an open invoice, and is within the larger of 3% of that invoice's outstanding amount or 5 units of it, holds that invoice: `needs review`, with `NEAR_AMOUNT` printed on every run and the exact `invoice-chaser confirm INV-1103 --payment <id>` and `invoice-chaser reject INV-1103 <id>` commands. It is never a suggestion, so no reminder goes to `drafts/`. A payment that is already matched to another invoice, or already confirmed (consumed), does not hold this one, and a payment you rejected for it does not either. Exact-amount strangers are held too, as before. Example: an 800.00 USD invoice is held by a stranger's 786.00 USD with the memo "thanks for the work", and not by 400.00.
 
 **What you confirm is remembered, and checked.** `confirm` and `mark-paid` store a snapshot of the invoice (client, amount, currency, due date). If `invoices.csv` later differs, the invoice goes back to **needs review: invoice changed since you confirmed it**, with a warning, instead of staying paid.
 

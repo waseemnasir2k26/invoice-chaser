@@ -335,6 +335,13 @@ def run(args) -> int:
         confirmed = Decimal(rec["amount"]) if rec and not (CHECK_SNAPSHOT and snapshot_diff(rec.get("snapshot", {}), r.invoice)) else Decimal("0")
         r.owed = (r.invoice.amount - confirmed).quantize(Decimal("0.01"))
 
+    # 1.1.16: an unidentified payment near an open invoice holds it: say so on every run, with the confirm / reject commands
+    for r in results:
+        if r.status == "needs_review":
+            for m in r.suggestions:
+                if m.near:
+                    _warn(warnings, "NEAR_AMOUNT", f"{r.invoice.id}: {m.blocker}")
+
     # ---- the tool's own output: suggestions, never paid ----
     for r in results:  # say why a rejected payment is no longer suggested
         keys = rejected.get(r.invoice.id.strip().lower())

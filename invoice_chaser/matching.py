@@ -39,6 +39,7 @@ from .decision import (
 )
 from .ladder import days_overdue, stage_for
 from .models import Invoice, InvoiceResult, Match, Payment
+from .shellquote import quote
 
 SETTLED = {"paid", "settled"}
 VOID = {"void", "voided", "cancelled", "canceled", "written off", "writtenoff"}
@@ -46,6 +47,11 @@ _SUFFIXES = {"ltd", "limited", "llc", "llp", "inc", "incorporated", "co", "corp"
 NAME_LOOKBACK_DAYS = 60  # name-path candidates are searched from this long before the invoice date
 MAX_CANDIDATES = 20  # K: candidates per invoice from the amount / payer / id indexes
 MAX_NAMED = 3  # a payment naming more known invoice ids than this is never paired: it goes to review
+# 1.1.16: a run of digits joined by single spaces, dots or dashes ("1 103", "11.03"): its digit skeleton is compared with invoice numbers
+_DIGIT_SKELETON = re.compile(r"(?<![0-9])[0-9]+(?:[ .\-][0-9]+)+(?![0-9])")
+# 1.1.16 NEAR_AMOUNT: an unidentified payment within max(NEAR_PCT of the outstanding amount, NEAR_ABS) of an open invoice, same currency
+NEAR_PCT = Decimal("0.03")
+NEAR_ABS = Decimal(5)
 # Rules the tests switch off one at a time to prove each test depends on its rule.
 FUTURE_CHECK = True
 COUNT_SETTLED_PEERS = True
@@ -314,11 +320,15 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     tok_cache: dict[int, frozenset] = {}
 
     def _mention_tokens(pi: int) -> frozenset:
+        """Digit runs of the payment text, plus its digit skeleton (1.1.16): "INV-1 103" and "INV-11.03" mention 1103."""
         t = tok_cache.get(pi)
         if t is None:
             found: set[str] = set()
             for text in field_texts(payments[pi].description, payments[pi].payer):
-                found.update(re.findall(r"\d+", normalise(text)))
+                norm = normalise(text)
+                found.update(re.findall(r"\d+", norm))
+                for run in _DIGIT_SKELETON.findall(norm):
+                    found.add(re.sub(r"[ .\-]", "", run))
             t = tok_cache[pi] = frozenset(found)
         return t
 
@@ -471,6 +481,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     suggested: dict[str, list[Match]] = {i.id: [] for i in invoices}
     rem = {pi: p.amount for pi, p in enumerate(payments)}
 
+    used: set[int] = set()  # payments already matched to an invoice (confirmed or suggested): never near-amount evidence
     for s, inv, pi in pairs:
         if not s.auto:
             continue
@@ -481,6 +492,7 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         paid[inv.id] += alloc
         rem[pi] -= alloc / s.rate
         p = payments[pi]
+        used.add(pi)
         confirmed[inv.id].append(Match(inv.id, p.id, p.date, p.description, s.confidence, s.reason, alloc,
                                        payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
                                        named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
@@ -491,10 +503,42 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         if paid[inv.id] >= inv.amount * (1 - tolpct) or len(suggested[inv.id]) >= 2:
             continue
         p = payments[pi]
+        used.add(pi)
         suggested[inv.id].append(Match(inv.id, p.id, p.date, p.description, s.confidence, s.reason,
                                        blocker=s.blocker or f"confidence {s.confidence} is below {cfg.auto_threshold}",
                                        payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
                                        named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
+
+    # 1.1.16 NEAR_AMOUNT. A payment that names no invoice (no id resolved, no foreign id), is not already matched or confirmed for
+    # another invoice, and is in the same currency, within max(3% of the outstanding amount, 5 units) of an open invoice, holds that
+    # invoice: needs_review (never a suggestion, so no reminder in drafts/). The payment is listed as a candidate, so that
+    # `confirm --payment` or `reject` answers it. A payment already rejected for this invoice does not hold it.
+    near_pool: dict[str, tuple[list, list]] = {}
+    for cur, idxs in by_cur.items():
+        pool = sorted((pi for pi in idxs if pi not in used and not infos[pi].ids and not infos[pi].foreign
+                       and payments[pi].amount > 0), key=lambda i: payments[i].amount)
+        near_pool[cur] = ([payments[i].amount for i in pool], pool)
+    for inv in active:
+        amts, pool = near_pool.get(inv.currency, ([], []))
+        if not pool or inv.amount <= 0:
+            continue
+        span = max(inv.amount * NEAR_PCT, NEAR_ABS)
+        lo, hi = bisect_left(amts, inv.amount - span), bisect_right(amts, inv.amount + span)
+        hits = [pi for pi in pool[lo:hi]
+                if (inv.id.strip().lower(), f"{payments[pi].source}:{payments[pi].id}") not in excluded]
+        for pi in hits[:2]:
+            if len(suggested[inv.id]) >= 2:
+                break
+            p = payments[pi]
+            cmd_inv, cmd_pay = quote(inv.id), quote(p.id)
+            suggested[inv.id].append(Match(
+                inv.id, p.id, p.date, p.description, 0.0, "amount near the invoice; no invoice id or client name in the payment",
+                blocker=(f"NEAR_AMOUNT: payment {p.id} ({p.amount} {p.currency}, {p.date.isoformat()}, payer {p.payer or 'none'}) is within "
+                         f"{NEAR_PCT * 100:g}% (or {NEAR_ABS} units) of this invoice's {inv.amount:.2f} but names no invoice and no client. "
+                         f"If it pays this invoice: invoice-chaser confirm {cmd_inv} --payment {cmd_pay}. "
+                         f"If not: invoice-chaser reject {cmd_inv} {cmd_pay}"),
+                payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
+                named=tuple(sorted(infos[pi].ids)), suspect=p.suspect, near=True))
 
     for iid, pi in net_first.items():  # 1.1.15: the held payment is listed as a candidate, so `reject` can say it is not this invoice's
         p = payments[pi]
@@ -525,6 +569,8 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         elif sg:
             st, out = "needs_review", inv.amount
             why = "; ".join(f"{m.payment_id}: {m.blocker}" for m in sg)
+            if inv.id in bulk and all(m.near for m in sg):  # 1.1.16: a NEAR_AMOUNT hold keeps the bulk reason it would otherwise show
+                why = bulk[inv.id] + "; " + why
         elif inv.id in bulk:
             st, out = "needs_review", inv.amount
             why = bulk[inv.id]
