@@ -970,13 +970,16 @@ def _confirm_op(entry: dict, when: date, rows_all: list[dict]) -> tuple[dict, st
     keys = list(entry["previous_payments"]) + [p["key"] for p in entry["payments"]]
     got = Decimal(entry["previous_received"]) + sum((Decimal(p["allocated"]) for p in entry["payments"]), Decimal(0))
     amount = Decimal(entry["amount"])
+    weak = {}
+    if entry.get("suggested_kind") == "review":  # 1.1.19: a held candidate, confirmed because you named its payment
+        weak = {"confirmed_weak": True, "reason": entry["reason"], "score": entry["confidence"]}
     if entry["kind"] == "paid" or got >= amount - Decimal(entry["tolerance"]):
         op = {"invoice_id": entry["invoice_id"], "kind": "paid", "when": when, "snapshot": entry["snapshot"], "keys": keys, "rows": rows,
-              "source": "confirm"}
+              "source": "confirm", **weak}
         return op, (f"{entry['invoice_id']}: paid ({entry['currency']} {got:,.2f} of {amount:,.2f}, "
                     f"payments {', '.join(p['id'] for p in entry['payments'])})")
     op = {"invoice_id": entry["invoice_id"], "kind": "received", "when": when, "snapshot": entry["snapshot"], "keys": keys, "rows": rows,
-          "amount": str(got)}
+          "amount": str(got), **weak}
     return op, (f"{entry['invoice_id']}: part-payment {entry['currency']} {got:,.2f} of {amount:,.2f} recorded; "
                 f"{amount - got:,.2f} stays outstanding and will be chased")
 
@@ -1039,7 +1042,8 @@ def _entry_with_payments(entries: list[dict], invoice: str, wanted: list[str]) -
         picked.append({**p, "allocated": str(alloc)})
     total = prev + sum((Decimal(p["allocated"]) for p in picked), Decimal(0))
     kind = "paid" if total >= amount - Decimal(entry["tolerance"]) else "partial"
-    return {**entry, "kind": kind, "payments": picked, "left_over": [p for p in entry["payments"] if p not in chosen]}
+    return {**entry, "kind": kind, "suggested_kind": entry["kind"], "payments": picked,
+            "left_over": [p for p in entry["payments"] if p not in chosen]}
 
 
 def confirm(args) -> int:
@@ -1099,6 +1103,9 @@ def confirm(args) -> int:
             if clash:
                 print(f"WARNING: {clash}: recorded because of --force", file=sys.stderr)
         _check_still_valid([entry], meta, lpath, real_today)
+        if entry["suggested_kind"] == "review":  # 1.1.19: say what was held, before anything is recorded
+            print(f"weak match (score {entry['confidence']:.2f}, held: {entry['reason']}). "
+                  f"Recording because you named this payment explicitly.")
         summaries, changed = _confirm_all([entry], when, lpath)
         if not changed:
             print(f"nothing changed: {entry['invoice_id']} already has this confirmation in the ledger")

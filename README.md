@@ -8,13 +8,13 @@
 
 **It finds the payments, you confirm with one command. It never marks paid on a guess, never chases a client who paid.**
 
-| What it will not do | What it does instead |
-| --- | --- |
-| Mark an invoice paid by itself | Suggests it with the exact payment row and the reason. Only `confirm` writes "paid". |
-| Chase an invoice that has a suggested payment | Waits for your confirm or reject, and flags it STUCK after 7 days so it cannot hide. |
-| Trust a refund, a failed or a repeated payment | Holds it in "needs review" and says why. |
-| Send an email | Writes `.eml` drafts for you to read, edit and send. |
-| Upload anything | Everything stays on your machine. No account, no SaaS login. |
+| What it will not do                            | What it does instead                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Mark an invoice paid by itself                 | Suggests it with the exact payment row and the reason. Only `confirm` writes "paid". |
+| Chase an invoice that has a suggested payment  | Waits for your confirm or reject, and flags it STUCK after 7 days so it cannot hide. |
+| Trust a refund, a failed or a repeated payment | Holds it in "needs review" and says why.                                             |
+| Send an email                                  | Writes `.eml` drafts for you to read, edit and send.                                 |
+| Upload anything                                | Everything stays on your machine. No account, no SaaS login.                         |
 
 ```bash
 git clone https://github.com/waseemnasir2k26/invoice-chaser.git && cd invoice-chaser
@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.18  as of 2026-10-25
+invoice-chaser 1.1.19  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -104,12 +104,12 @@ Alex Rivera
 
 Strong evidence, which becomes a suggestion, exists in exactly two forms.
 
-| | Path A: invoice id | Path B: the client itself |
-| --- | --- | --- |
-| Amount | within the fee/FX tolerance, in the invoice currency (or via a configured rate). Lower = **part-payment** suggestion. Higher = needs review | exact, same currency |
-| Who | exactly ONE invoice id in the payment, as a whole token. Path A trusts the id, not the payer: a payment that carries your invoice id is suggested even if the payer name is different | payer words = client words (any order, same word counts), same legal-suffix kind: Acme Ltd = Acme Limited, but Acme Ltd != Acme Inc != Acme |
-| The text | it names no other invoice, and no id-like token (INV-9999) that is missing from your invoice list | it names no invoice at all |
-| Never | refund, failure or non-receipt wording (below) | the same; and no other invoice of that client at the same price (settled ones count), and no second client with the same name |
+|          | Path A: invoice id                                                                                                                                                                    | Path B: the client itself                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Amount   | within the fee/FX tolerance, in the invoice currency (or via a configured rate). Lower = **part-payment** suggestion. Higher = needs review                                           | exact, same currency                                                                                                                        |
+| Who      | exactly ONE invoice id in the payment, as a whole token. Path A trusts the id, not the payer: a payment that carries your invoice id is suggested even if the payer name is different | payer words = client words (any order, same word counts), same legal-suffix kind: Acme Ltd = Acme Limited, but Acme Ltd != Acme Inc != Acme |
+| The text | it names no other invoice, and no id-like token (INV-9999) that is missing from your invoice list                                                                                     | it names no invoice at all                                                                                                                  |
+| Never    | refund, failure or non-receipt wording (below)                                                                                                                                        | the same; and no other invoice of that client at the same price (settled ones count), and no second client with the same name               |
 
 Digits are digits in any script: `INV-١١٠٤` (Arabic-Indic) and `INV-1104` are the same id, at import, in command arguments and in payment text. A safety net also reads the digit skeleton of a payment: digits joined by single spaces, dots or dashes (`INV-1 103`, `INV-11.03`) mention invoice 1103, and hold it (see the safety net in 1.1.15) without ever naming it as paid.
 
@@ -118,6 +118,7 @@ What "whole token" means: `INV-1004`, `inv 1004`, `INV#1004`, `(INV-1004)`, `INV
 Wording that disqualifies a payment: refund, reversal, failure and non-receipt words in about twenty languages (list below, generated from the code, so it cannot drift). It is a long list, not a complete one: anything that slips past it still only becomes a suggestion that you confirm. Short words match only as whole words, so a client called Stornoway, Returnly, Voidstar, Kreditech, Re or Un is not mistaken for a refund. The client's name is never cut out of the text. A client whose own name contains one of these words (Refund Ltd, Pending Ventures, Chargebacks911) is never matched automatically: the row says "client name contains a refund word: please check".
 
 <!-- sample:negative-words -->
+
 ```
 Whole words (the word must equal the entry, any case):
   afgewezen, annulation, annullato, annulé, annulée, anulacion, anulación, anulado, anulowane, avoir, başarısız, blocked, bounce, bounced, cancel, cancelado, canceled, canceling, cancellation, cancellations, cancelled, cancelling, cancels, chargeback, chargebacks, clawback, creditnota, decline, declined, declines, denied, devolucao, devolucion, devoluciones, devolución, devolução, devolvido, devuelto, dibatalkan, dispute, disputed, disputes, ditolak, echoué, estornado, estorno, fail, failed, fails, failure, failures, falhou, fallido, gagal, geannuleerd, iade, iadesi, impago, impayé, impayée, insoluto, iptal, mislukt, nsf, odrzucone, overdraft, pendente, pendiente, pending, rechazado, recusado, reddedildi, reembolsado, reembolso, reembolsos, refund, refunded, refunding, refunds, refusal, refused, reimburse, reimbursed, reimbursement, reject, rejected, rejects, rejeté, rejetée, repaid, repayment, respinto, restitutie, restitution, restituzione, retour, retourné, retournée, retours, return, returned, returning, returns, reversal, reversals, reverse, reversed, reverses, reversing, rimborsato, rimborsi, rimborso, rueckbuchung, rueckgabe, rückbuchung, rückgabe, storna, stornieren, storniert, stornierung, stornierungen, storno, terugbetaald, terugbetaling, teruggestort, unpaid, unsuccessful, void, voided, vráceno, vrácení, zamítnuto, zrušeno, zwrot, zwrotem, zwrotu, zwroty, zwrócono, échoué, возврат, возврата, возвраты, возвращен, возвращён, отклонен, отклонён, отмена, отменен, отменён, ביטול, החזר, ارتجاع, استرداد, بازپرداخت, برگشت, فشل, مرتجع, مرفوض, ملغي, منسوخ, ناکام, واپسی
@@ -130,9 +131,10 @@ English phrases (the words in a row):
 Credit notes: the word 'credit' followed by one of:
   memo, nota, note, notes
 ```
+
 <!-- /sample -->
 
-Everything else is **needs review**: no suggestion to confirm, no reminder drafted, and `status.csv` / `review.html` say exactly why in a *why not paid* column (for example `payer 'Acme Holdings' is not exactly 'Acme'`, or `the payment names several invoices (INV-1, INV-2)`). Each such row shows a copy-paste `invoice-chaser mark-paid INV-1006` for when you have checked yourself. Also held for review, never guessed:
+Everything else is **needs review**: no suggestion to confirm, no reminder drafted, and `status.csv` / `review.html` say exactly why in a _why not paid_ column (for example `payer 'Acme Holdings' is not exactly 'Acme'`, or `the payment names several invoices (INV-1, INV-2)`). Each such row shows a copy-paste `invoice-chaser mark-paid INV-1006` for when you have checked yourself. Also held for review, never guessed:
 
 - the same payment seen in two exports under different payer names ("Acme Ltd" in Wise, "Jane Okafor" in the bank file): same amount and currency, within two days, from two different exports, and the same invoice id named in both (or both payers blank). Both are held in needs review. Name the one you checked with `invoice-chaser confirm INV-9 --payment <id>` (name both if both are real); it never counts the invoice twice;
 - (Once you have named the payment with `--payment`, those payments are consumed and the hold does not fire again; the other half of the pair is printed with the exact `reject` / `confirm` commands.)
@@ -194,10 +196,10 @@ A payment key can back at most ONE invoice in the ledger. This is checked on eve
 
 ## Exit codes
 
-| Code | Meaning |
-| ---- | ------- |
-| `0`  | done; no CRITICAL notice in this run |
-| `1`  | nothing changed: the command was valid but the ledger already said so (`nothing changed` is printed) |
+| Code | Meaning                                                                                                          |
+| ---- | ---------------------------------------------------------------------------------------------------------------- |
+| `0`  | done; no CRITICAL notice in this run                                                                             |
+| `1`  | nothing changed: the command was valid but the ledger already said so (`nothing changed` is printed)             |
 | `2`  | an error (bad id, refused change, unreadable input), **or** `run` finished with one or more **CRITICAL** notices |
 
 `run` exits with code **2** whenever a CRITICAL notice exists (an orphaned decision, a payment that could be the same as a confirmed one, a double binding, a STUCK_HOLD, an OVERDUE_HELD, a missing sender (`NO_SENDER`), a dropped invoice row, ...). Scripts and scheduled jobs should treat 2 as "look at review.html before you act". Warnings and routine notices keep exit code 0.
@@ -238,7 +240,7 @@ invoice-chaser unmark-paid INV-1006          # changed your mind
 invoice-chaser mark-sent INV-1005            # you sent that reminder: the stage is not drafted twice
 ```
 
-All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm` only works for a strong suggestion from the last run; for anything weaker use `mark-paid`. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `rebind`, `forget`, `unbind` and `orphans` do not depend on the day: they use the exports as they are now. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. Today nothing is repaired for you (see "Orphaned decisions" below), and `invoice-chaser ledger reset --backup` refuses a path with no ledger in it, never overwrites an earlier backup, and compares the copy byte for byte with the original before it resets anything.
+All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chaser run` to refresh the page. Ids are matched ignoring case and spaces. An id that is not in `out/status.csv`, a missing `status.csv`, or a date in the future is refused unless you fix it (or pass `--force` for the first two). `confirm --all-strong` confirms only strong (kind `paid`) suggestions. `confirm INV --payment PAYO` confirms that exact pairing, including a weak or held suggestion: it prints the hold reason and score first, then records `confirmed_weak`, the reason and the score in `sent.json`. `mark-paid` records a payment without any suggestion. The ledger is written under a lock with an atomic replace, so parallel runs cannot lose each other's entries. `confirm` only works on the day of the run, on unchanged exports and an unchanged ledger for that invoice (reject, confirm or mark-paid in between means: run again), so a stale `suggestions.json` can never settle anything. `rebind`, `forget`, `unbind` and `orphans` do not depend on the day: they use the exports as they are now. `invoice-chaser demo` starts from a fresh ledger on every run; use `demo --keep-ledger` to try confirm and mark-paid across runs. Files written for you to share contain file names only, never folder paths: `review.html`, `status.csv`, `suggestions.json` and the drafts. The full paths that `confirm` needs to re-check your exports are kept in `out/local-state.json`, for this computer only. The ledger has a schema version (`sent.json` and `seen.json` both say `"schema": 1`). A file without one, or with an older or unknown one, is refused with a clear message and never guessed at; `invoice-chaser ledger reset --backup` starts fresh and keeps a copy. Future versions will migrate old ledgers by fingerprint (date, amount, currency, payer), so your decisions survive a change in how payment ids are made. Today nothing is repaired for you (see "Orphaned decisions" below), and `invoice-chaser ledger reset --backup` refuses a path with no ledger in it, never overwrites an earlier backup, and compares the copy byte for byte with the original before it resets anything.
 
 - **confirm:** records the invoice as paid (or the part-payment as received) with the exact payment ids and a snapshot of the invoice. The payments are used up: they are not suggested for another invoice.
 - **reject:** the next run does not suggest that payment for that invoice again, so the invoice is chased (or shows its next candidate).

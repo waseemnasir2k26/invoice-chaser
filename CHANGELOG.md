@@ -1,3 +1,12 @@
+## 1.1.19 - 2026-10-26
+
+Naming a held payment in `confirm` is recorded as a weak confirmation, and the README says so.
+
+- **`confirm INV --payment ID` on a held suggestion.** Naming the payment is a human confirmation, so it stays allowed. Before anything is recorded, the terminal prints `weak match (score 0.69, held: <reason>). Recording because you named this payment explicitly.`
+- **Decision record.** A confirmation of a review-kind suggestion is stored in `sent.json` with `confirmed_weak: true`, the hold `reason` and the `score`. Strong confirmations are unchanged.
+- **README fixed.** It said `confirm` works only for strong suggestions. It now says `--all-strong` takes only strong ones, `--payment` confirms that exact pairing (weak or held too), and `mark-paid` records a payment with no suggestion.
+- **Not changed.** `confirm --all-strong` still skips weak rows, and `confirm INV` without `--payment` still refuses a weak-only invoice.
+
 ## 1.1.18 - 2026-10-26
 
 Hold reasons say what was detected, and refund rows are named.
@@ -186,7 +195,7 @@ Fixes from the first review round.
 - `pip install .` then `invoice-chaser demo` works from any folder: demo data now ships inside the package.
 - Reminder templates no longer assert history the tool cannot know. Drafts say nothing about earlier reminders or paused work unless you unlock it: `sent.json` ledger, a `last_reminder` column, `previous_reminders: true`, and `pause_work_on_final: true`. New `reply_within_days` setting.
 - New `invoice-chaser mark-sent <invoice> [--stage] [--date]` and `sent.json` ledger: a sent stage is never drafted twice, and follow-ups cite the date of your last reminder.
-- **The "paid" decision is now one table, not a score** (README: How matching decides). A payment counts as paid only when (A) exactly one invoice id appears in its text as a strict whole token (`INV-1/2`, `INV-1.5`, `INV 1 2`, `INV-10` do not match INV-1), the amount is within tolerance, there is no refund/reversal/credit-note word, and it names no other invoice; or (B) the amount is exact and the payer IS the client: same words in any order, same legal-suffix kind (Ltd != Inc != none). Bare numbers never count as ids ("Deposit for 5 hours"); all-digit ids need `ref_prefixes`. Everything else is "needs review" with a *why not paid* column and a copy-paste `invoice-chaser mark-paid INV-x`. 1,900 adversarial test scenarios assert zero false paid.
+- **The "paid" decision is now one table, not a score** (README: How matching decides). A payment counts as paid only when (A) exactly one invoice id appears in its text as a strict whole token (`INV-1/2`, `INV-1.5`, `INV 1 2`, `INV-10` do not match INV-1), the amount is within tolerance, there is no refund/reversal/credit-note word, and it names no other invoice; or (B) the amount is exact and the payer IS the client: same words in any order, same legal-suffix kind (Ltd != Inc != none). Bare numbers never count as ids ("Deposit for 5 hours"); all-digit ids need `ref_prefixes`. Everything else is "needs review" with a _why not paid_ column and a copy-paste `invoice-chaser mark-paid INV-x`. 1,900 adversarial test scenarios assert zero false paid.
 - Shared prices: candidates are capped per invoice and never paired in bulk; with more than 20 same-amount payments and nothing identifying yours, the invoice goes to needs review with one line instead of exhausting memory. A stranger's same-amount payment means needs review, not a reminder.
 - Amounts are parsed strictly: ambiguous (`1,234`, `1.500`) or malformed (`1e400`, `1000 (2 of 3)`, `1,23,456`) values skip the row with the reason; `decimal_comma` / `--decimal-comma` says which you mean.
 - New `unmark-paid`; a second `mark-paid` warns and changes nothing. An edited draft of an invoice that becomes paid is moved to `drafts/stale/` (never deleted); edited drafts are tracked in `kept.json` so the warning repeats. `drafts.json` keeps the hashes.

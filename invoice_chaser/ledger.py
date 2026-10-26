@@ -436,16 +436,18 @@ def apply_confirmations(path: str | Path, ops: list[dict]) -> bool:
         data = _read(path)
         for op in ops:
             inv = op["invoice_id"]
+            # 1.1.19: a held candidate you confirmed by naming its payment records confirmed_weak, the reason it was held and its score
+            weak = {"confirmed_weak": True, "reason": op["reason"], "score": op["score"]} if op.get("confirmed_weak") else {}
             if op["kind"] == "paid":
                 data["paid"][inv] = {"date": op["when"].isoformat(), "note": "", "source": op.get("source", "confirm"),
-                                     "payments": list(op["keys"]), "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
+                                     "payments": list(op["keys"]), "snapshot": op["snapshot"], "payment_rows": list(op["rows"]), **weak}
                 data["received"].pop(inv, None)
             else:
                 amount = Decimal(op["amount"])
                 if not amount.is_finite() or amount < 0:
                     raise ValueError(f"received amount {op['amount']!r} must be a finite, non-negative number")
                 data["received"][inv] = {"date": op["when"].isoformat(), "amount": str(amount), "payments": list(op["keys"]),
-                                         "snapshot": op["snapshot"], "payment_rows": list(op["rows"])}
+                                         "snapshot": op["snapshot"], "payment_rows": list(op["rows"]), **weak}
         return _write(path, data)
 
 
