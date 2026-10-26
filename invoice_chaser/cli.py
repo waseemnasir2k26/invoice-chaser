@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import date
@@ -24,7 +25,7 @@ from .dedupe import (
     repeat_of,
     row_matches,
 )
-from .drafts import valid_email, write_drafts
+from .drafts import CHECK_FIRST_DIR, valid_email, write_drafts
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
     apply_confirmations,
@@ -71,6 +72,9 @@ from .templating import TemplateError, flags_for, load_template, render, variabl
 DEMO_DIR = Path(__file__).resolve().parent / "demo_data"
 DEMO_TODAY = date(2026, 10, 25)
 SEEN_SCHEMA = 1
+HELD = ("suggested_paid", "partial_suggested", "needs_review")  # statuses that wait for your decision
+# a payment that may be counted twice (another export, or a re-export of a confirmed payment): the money may already have arrived
+DOUBLE_COUNT = re.compile(r"two exports|may be the same payment|possible repeat of a payment|identical payment found")
 CHECK_SNAPSHOT = True  # tests switch this off to prove the snapshot check is what catches a changed invoice
 
 
@@ -375,6 +379,22 @@ def run(args) -> int:
     for r in stuck:  # an internal note to YOU, never to the client
         items.append(_check_item(r, cfg, _out_hint(args.out)))
         r.draft_status = "no client draft; STUCK: internal note drafted for you"
+    # a held invoice that has waited long enough AND is far enough overdue also gets the normal client reminder for its stage,
+    # written to drafts/check-first/ with CHECK FIRST in the subject and body. Never for a double-bound or double-counted payment.
+    check_first: list[dict] = []
+    for r in results:
+        if r.status not in HELD or not (r.waiting_days > cfg.stuck_after_days and r.days_overdue > cfg.stuck_overdue_days):
+            continue
+        prefix = "STUCK: internal note drafted for you; " if r.stuck else ""
+        blocked = _no_client_draft(r, double_held)
+        if blocked:
+            r.draft_status = f"{prefix}no client draft: {blocked}"
+            continue
+        it = _check_first_item(r, cfg, args, templates_dir, llm_keys, ledger.get(r.invoice.id.strip().lower()), orphans, warnings)
+        r.draft_status = prefix + r.draft_status
+        if it:
+            check_first.append(it)
+    items.extend(check_first)
 
     out.mkdir(parents=True, exist_ok=True)
     settled = {r.invoice.id.lower() for r in results if r.status in ("paid", "void")}
@@ -392,7 +412,7 @@ def run(args) -> int:
     drafts = {it["invoice_id"]: it["file"] for it in items if not it.get("internal")}
     write_status_csv(results, drafts, out / "status.csv")
     (out / "review.html").write_text(render_html(results, leftovers, drafts, today, warnings, early, opts.ignored,
-                                                 _out_hint(args.out), suggestions), encoding="utf-8")
+                                                 _out_hint(args.out), suggestions, check_first=check_first), encoding="utf-8")
 
     counts: dict[str, int] = {}
     for r in results:
@@ -412,6 +432,8 @@ def run(args) -> int:
         print(f"  !! {len(stuck)} invoice(s) STUCK waiting for your decision: oldest {stuck[0].invoice.id}, "
               f"{stuck[0].days_overdue} days overdue. Decide with confirm / reject / mark-paid (a note to you is in drafts/).")
     print(f"  {n_client} draft(s) written (nothing sent) -> {out / 'drafts'}")
+    if check_first:
+        print(f"  {len(check_first)} CHECK FIRST reminder(s) written -> {out / 'drafts' / CHECK_FIRST_DIR}: verify the possible payment before sending")
     print(f"  {out / 'status.csv'}\n  {out / 'review.html'}")
     if early:
         print(f"  {len(early)} payment(s) dated outside an invoice's window: listed in review.html (check the date format)")
@@ -640,6 +662,57 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
         r.stuck = r.waiting_days > cfg.stuck_after_days or r.days_overdue > cfg.stuck_overdue_days
     out.mkdir(parents=True, exist_ok=True)
     atomic_write_text(seen_file, json.dumps({"schema": SEEN_SCHEMA, "invoices": now}, indent=2, sort_keys=True))
+
+
+def _no_client_draft(r, double_held: dict) -> str:
+    """Why a held invoice gets no client reminder even when it is stuck ("" = it may get a CHECK FIRST one)."""
+    if r.invoice.id.strip().lower() in double_held:
+        return "a payment backs two invoices (PAYMENT_DOUBLE_BOUND): the money may have arrived"
+    if any(DOUBLE_COUNT.search(m.suspect or "") for m in (r.matches or r.suggestions)):
+        return "the possible payment may be a double count of another payment: the money may have arrived"
+    return ""
+
+
+def _possible_payment(r, orphans: list[dict]) -> str:
+    """'<payment id>, <date>, <amount>, payer <payer>' for the payment that may have arrived."""
+    cands = r.matches or r.suggestions
+    if cands:
+        return "; ".join(f"{m.payment_id}, {m.payment_date.isoformat()}, {m.amount:,.2f} {m.currency}, payer {m.payer or '(none)'}" for m in cands)
+    found = [c for o in orphans if r.invoice.id.lower() in {h.lower() for h in o["hold"]} for c in o["candidates"]]
+    if found:
+        return "; ".join(f"{c['id']}, {c['date']}, {c['amount']} {c['currency']}, payer {c['payer'] or '(none)'}" for c in found)
+    return "a payment you decided about, see review.html"
+
+
+def _check_first_item(r, cfg, args, templates_dir, llm_keys: bool, entries, orphans: list[dict], warnings: list) -> dict | None:
+    """The normal client reminder for the invoice's stage, marked CHECK FIRST. Same send-blockers as an ordinary draft."""
+    inv = r.invoice
+    stage = stage_for(r.days_overdue, cfg.stage_days)
+    if stage is None:
+        r.draft_status = "no check-first draft: not yet due for a reminder"
+        return None
+    if not inv.email:
+        r.draft_status = "missing email"
+    elif not valid_email(inv.email):
+        r.draft_status = "invalid email"
+    if r.draft_status in ("missing email", "invalid email"):
+        _warn(warnings, "EMAIL_MISSING", f"{inv.id} ({inv.client}): {r.draft_status}, no check-first draft written")
+        return None
+    hs = highest_sent(entries)
+    if hs and hs[0] >= STAGES.index(stage):
+        r.draft_status = f"no check-first draft: {hs[1]} already sent {hs[2]}"
+        return None
+    line = ""
+    if args.llm and llm_keys:
+        v = variables_for(r, cfg.sender_name, cfg.payment_details)
+        line = personal_line(v["first_name"], v["outstanding"], r.days_overdue, inv.id) or ""
+    v = variables_for(r, cfg.sender_name, cfg.payment_details, line, reply_days=cfg.reply_within_days, last_reminder=r.last_reminder)
+    flags = flags_for(stage, cfg.previous_reminders, r.last_reminder, cfg.pause_work_on_final)
+    subject, body = render(load_template(stage, cfg.tone, templates_dir), v, flags)
+    head = f"CHECK FIRST: a possible payment was found ({_possible_payment(r, orphans)}). Verify it before sending this."
+    r.draft_status = f"CHECK FIRST reminder drafted in {CHECK_FIRST_DIR}/ (verify the possible payment first)"
+    return {"invoice_id": inv.id, "stage": stage, "to": inv.email, "from_name": cfg.sender_name, "from_email": cfg.sender_email,
+            "subject": "[CHECK FIRST] " + subject, "body": head + "\n\n" + body, "check_first": True}
 
 
 def _check_item(r, cfg, out_hint: str) -> dict:
@@ -971,16 +1044,20 @@ def mark_sent(args) -> int:
     out = Path(args.out)
     invoice_id, when = _resolve_invoice(args)
     stage = args.stage
+    try:
+        drafted = json.loads((out / "drafts.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        drafted = []
+    mine = [d for d in drafted if str(d.get("invoice_id", "")).lower() == invoice_id.lower() and not d.get("internal")]
     if not stage:
-        try:
-            drafted = json.loads((out / "drafts.json").read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            drafted = []
-        stage = next((d["stage"] for d in drafted if str(d.get("invoice_id", "")).lower() == invoice_id.lower() and not d.get("internal")), None)
+        stage = next((d["stage"] for d in mine), None)
         if not stage:
             raise ValueError(f"no --stage given and no draft for {invoice_id} in {out / 'drafts.json'}")
     if stage not in STAGES:
         raise ValueError(f"--stage must be one of {', '.join(STAGES)}")
+    if any(d.get("check_first") and d.get("stage") == stage for d in mine) and not getattr(args, "checked", False):
+        raise ValueError(f"the {stage} reminder for {invoice_id} is a CHECK FIRST draft (a possible payment was found). Verify that payment, "
+                         f"then run mark-sent again with --checked")
     path = _ledger_path(args)
     if not record_sent(path, invoice_id, stage, when):
         print(f"nothing changed: the {stage} reminder for {invoice_id} on {when} is already recorded")
@@ -1093,6 +1170,20 @@ def orphans_cmd(args) -> int:
     return 0
 
 
+def _already_rebound(lpath: Path, old: str, new: str) -> bool:
+    """True when `new` now carries your decisions and `old` carries none: an earlier rebind already resolved this pair."""
+    names = {row["key"] for row in load_payment_rows(lpath)}
+    for rows in load_rejected_rows(lpath).values():
+        names.update(rows)
+    names |= set(load_paid(lpath)) | set(load_received(lpath))
+    names = {n.strip().lower() for n in names}
+
+    def has(x: str) -> bool:
+        x = x.strip().lower()
+        return any(n == x or n.endswith(":" + x) for n in names)
+    return has(new) and not has(old)
+
+
 def rebind(args) -> int:
     """The explicit, checked way to attach a decision to a payment (or an invoice) that now has another id. Candidates come from the
     exports as they are now; a target that already has a decision is refused (nothing is overwritten)."""
@@ -1112,6 +1203,9 @@ def rebind(args) -> int:
         return 0
     pay = _payment_orphans(orphans, args.old)
     if not pay:
+        if _already_rebound(lpath, args.old, args.new):
+            print(f"nothing changed: {args.old} is already rebound to {args.new}; no decision about {args.old} is left to move")
+            return 1
         raise ValueError(f"{args.old!r} is not an orphaned decision in the current exports (`invoice-chaser orphans` lists them)")
     cands = {c["key"]: c for o in pay for c in o["candidates"]}
     want = args.new.strip().lower()
@@ -1237,6 +1331,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--today", help=argparse.SUPPRESS)
         sp.add_argument("--force", action="store_true", help="record an id that is not in <out>/status.csv")
         common(sp)
+    m.add_argument("--checked", action="store_true", help="required for a CHECK FIRST reminder: you verified the possible payment first")
     m.set_defaults(fn=mark_sent)
     mp.set_defaults(fn=mark_paid)
     um = sub.add_parser("unmark-paid", help="undo a confirm / mark-paid")

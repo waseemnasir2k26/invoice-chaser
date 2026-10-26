@@ -39,7 +39,7 @@ The top of the page, "Confirm these", has one copy-paste command per suggested p
 1. Reads `invoices.csv` plus one or more payment exports.
 2. Looks for the payment behind each invoice and gives every candidate a reason and a confidence.
 3. Sorts every invoice into one of: **suggested paid** and **part-payment suggested** (strong evidence, waiting for you), **needs review** (weak or conflicting evidence), **overdue** (no payment found), **open** (not due yet). **Paid** only ever appears if invoices.csv says so or you ran `confirm` / `mark-paid`.
-4. Drafts a reminder only for **overdue** invoices (and for the rest of a part-payment you confirmed). Never for an invoice that has a suggested payment: those wait for your `confirm` or `reject`, so a wrong suggestion cannot cause a reminder to a client who paid. A waiting suggestion does not park an unpaid invoice for ever: after `stuck_after_days` (default 7), or at once when the invoice is already more than 30 days overdue, it is flagged **STUCK** at the top of `review.html` and in the command-line summary, and a "check this one" note is drafted to YOU (never to the client). Rejecting the suggestion, or `mark-paid`, ends the wait.
+4. Drafts a reminder only for **overdue** invoices (and for the rest of a part-payment you confirmed). Never for an invoice that has a suggested payment: those wait for your `confirm` or `reject`, so a wrong suggestion cannot cause a reminder to a client who paid. A waiting suggestion does not park an unpaid invoice for ever: after `stuck_after_days` (default 7), or at once when the invoice is already more than 30 days overdue, it is flagged **STUCK** at the top of `review.html` and in the command-line summary, and a "check this one" note is drafted to YOU (never to the client). Rejecting the suggestion, or `mark-paid`, ends the wait. A STUCK invoice that has also waited longer than `stuck_after_days` and is more than `stuck_overdue_days` overdue gets the normal client reminder for its stage too, but written to **`out/drafts/check-first/`** (never `out/drafts/`): the first line says `CHECK FIRST: a possible payment was found (...)` and names that payment, and the subject starts with `[CHECK FIRST]`. Verify the payment before you send it, then record it with `mark-sent --checked`. Never for an invoice held as a payment that backs two invoices, or as a possible double count: the money may already have arrived.
 5. Writes `out/status.csv`, `out/review.html`, `out/suggestions.json` and `out/drafts/*.eml`.
 
 Drafts are always for you to read, edit and send yourself. Nothing is emailed; the code contains no mail-sending path, and a test fails if one appears.
@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.7  as of 2026-10-25
+invoice-chaser 1.1.8  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -237,6 +237,7 @@ All write `out/sent.json` (override with `--ledger`), then re-run `invoice-chase
 - **reject:** the next run does not suggest that payment for that invoice again, so the invoice is chased (or shows its next candidate).
 - **mark-paid:** the next run shows the invoice as paid, with your note, and drafts nothing for it. A second mark-paid prints "nothing changed: ... already marked paid" and exits 1.
 - **mark-sent:** a stage you already sent is never drafted again (the review page says when the next stage starts), and the next draft is worded as a follow-up with the date of your last reminder.
+- **The check-first folder:** `out/drafts/check-first/` holds the reminders for STUCK invoices (point 4). Send one only after you have verified the possible payment. `invoice-chaser mark-sent <INV> --checked` records it; without `--checked` it is refused.
 - **Stale drafts:** if you edited a draft and the invoice later becomes paid, your edited file is moved to `out/drafts/stale/` with a warning. It is never deleted. Edited drafts are remembered in `out/kept.json` so the warning repeats every run until you deal with the file.
 
 ## Your own data

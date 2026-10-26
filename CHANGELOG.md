@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.8 - 2026-10-26
+
+A stuck invoice is no longer silent to its client forever, and two small fixes from the judge review.
+
+- **CHECK FIRST reminders for stuck invoices.** An invoice held for your decision (suggested, needs review, or an orphaned decision) that has waited longer than `stuck_after_days` AND is more than `stuck_overdue_days` overdue also gets the normal client reminder for its stage. It is written to `out/drafts/check-first/` (not `out/drafts/`), the subject starts with `[CHECK FIRST] `, the first body line says `CHECK FIRST: a possible payment was found (<payment id>, <date>, <amount>, payer <payer>). Verify it before sending this.`, and `drafts.json` marks it `check_first: true`. The same send-blockers as an ordinary draft apply (missing or invalid email, a stage already sent). The internal `-check.eml` note to you is unchanged.
+- **No client draft when the money may have arrived.** An invoice held because a payment backs two invoices (`PAYMENT_DOUBLE_BOUND`), or because its possible payment is a double count of another export or a repeat of a confirmed payment, gets no client reminder at all.
+- **`mark-sent --checked`.** Recording a CHECK FIRST reminder as sent is refused unless you pass `--checked` (you verified the possible payment first).
+- **`review.html`** has a "Check-first reminders" section listing these drafts.
+- **A repeat `rebind` says so.** Rebinding a pair that an earlier `rebind` already resolved prints `nothing changed: ... is already rebound` and exits 1, instead of "is not an orphaned decision".
+- **Regression: bank amounts with a decimal comma.** `1.200,00` on a 1200 EUR invoice is read as 1200.00 and matched (test added).
+
 ## 1.1.7 - 2026-10-26
 
 Ledger invariants, checked on every run and before every write.

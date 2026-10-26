@@ -154,6 +154,19 @@ def _stuck_section(results: list[InvoiceResult], out_hint: str) -> str:
             "<th>Why</th><th>Your decision</th></tr>" + rows + "</table></div>")
 
 
+def _check_first_section(items: list[dict]) -> str:
+    """Client reminders drafted for held invoices. They are never to be sent unread: the possible payment comes first."""
+    if not items:
+        return ""
+    rows = "".join(f"<tr><td>{e(it['invoice_id'])}</td><td>{e(it['stage'])}</td><td class=small>{e(it['file'])}</td>"
+                   f"<td class=small>{e(it['subject'])}</td></tr>" for it in items)
+    return ("<h2>Check-first reminders</h2><div class=warn><p>These invoices have waited for your decision too long and are well overdue, "
+            "so the normal reminder is drafted in <code>drafts/check-first/</code>. Its first line says CHECK FIRST and names the possible "
+            "payment: verify that payment before you send it. After you send one, record it with "
+            "<code>invoice-chaser mark-sent &lt;invoice&gt; --checked</code>.</p></div>"
+            "<div class=wrap><table><tr><th>Invoice</th><th>Stage</th><th>Draft (drafts/)</th><th>Subject</th></tr>" + rows + "</table></div>")
+
+
 def _markpaid(invoice_id: str, out_hint: str) -> str:
     out = _out_arg(out_hint)
     return ("<div>If you checked and it is paid, run: "
@@ -184,13 +197,14 @@ def _rows(results: list[InvoiceResult], drafts: dict[str, str], out_hint: str = 
 def render_html(results: list[InvoiceResult], leftovers: list[tuple[Payment, Decimal]],
                 drafts: dict[str, str], today, warnings: list[str] | None = None,
                 early=None, ignored: list[Payment] | None = None, out_hint: str = "out",
-                suggestions: list[dict] | None = None) -> str:
+                suggestions: list[dict] | None = None, check_first: list[dict] | None = None) -> str:
     parts = [f"<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"<meta name=viewport content='width=device-width,initial-scale=1'>"
              f"<title>Invoice review {e(today.isoformat())}</title><style>{CSS}</style></head><body><main>"
              f"<h1>Invoice review</h1><p class=sub>As of {e(today.isoformat())}. Generated locally. "
              f"Nothing was sent: drafts are files for you to read, edit and send yourself.</p>"]
     parts.append(_stuck_section(results, out_hint))
+    parts.append(_check_first_section(check_first or []))
     parts.append(_confirm_section(suggestions or [], out_hint))
     if warnings:
         order = {"critical": 0, "warning": 1, "routine": 2}
