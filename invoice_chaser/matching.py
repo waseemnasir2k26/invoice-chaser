@@ -359,6 +359,13 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
             bulk[inv.id] = (f"{len(named_here)} payments name this invoice id: too many to pair; "
                             f"check your statement before chasing")
             named_here = []
+        # 1.1.14: a payment in a currency with no rate still NAMES this invoice id: it holds the invoice (never a reminder while it
+        # waits), whatever its currency or amount. It is only ever checked by you: no conversion is guessed.
+        unrated = sorted({payments[pi].currency for pi in named_here if payments[pi].currency not in rates
+                          and (inv.id.strip().lower(), f"{payments[pi].source}:{payments[pi].id}") not in excluded})
+        if unrated and inv.id not in bulk:
+            bulk[inv.id] = (", ".join(f"a payment in {cur} names this invoice: check the exchange/amount before chasing"
+                                      for cur in unrated) + " (no rate is set for it in fx_rates)")
         if not rates:
             continue
         cand: set[int] = set(named_here)

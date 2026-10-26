@@ -1,3 +1,11 @@
+## 1.1.14 - 2026-10-26
+
+A payment in another currency that names an invoice id now holds that invoice.
+
+- **Foreign-currency payment naming an invoice holds it (blocker).** A payment whose text names a known invoice id is held for your decision whatever its currency or amount, when no rate is set for it in `fx_rates`. The invoice is `needs_review` ("a payment in EUR names this invoice: check the exchange/amount"): no reminder in `drafts/`, a CHECK FIRST draft after the stuck window, and OVERDUE_HELD past `stuck_overdue_days`. Nothing is converted or counted paid.
+- **CHECK FIRST for a part-payment names it.** A CHECK FIRST draft for a partial suggestion reads "Invoice INV-K1 for 500.00 USD (a payment of 300.00 USD was found and is waiting for your check)".
+- README privacy line corrected: nothing leaves your machine unless you turn on `--llm`.
+
 # Changelog
 
 ## 1.1.13 - 2026-10-26

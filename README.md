@@ -28,7 +28,7 @@ Open `out/review.html` (macOS `open`, Windows `start`, Linux `xdg-open`): the to
 
 ![The loop: run, review.html, confirm, run again](docs/flow.png)
 
-Point this at your invoice list and your Wise, Payoneer or bank export. It matches payments to invoices and shows each match with its reason and the exact payment row. You review the list and confirm what is right. It writes a reminder draft, in the right tone for how late the invoice is, only for invoices where it found no payment at all. It never sends anything, and your data never leaves your machine: no account, no SaaS login.
+Point this at your invoice list and your Wise, Payoneer or bank export. It matches payments to invoices and shows each match with its reason and the exact payment row. You review the list and confirm what is right. It writes a reminder draft, in the right tone for how late the invoice is, only for invoices where it found no payment at all. It never sends anything, and nothing leaves your machine unless you turn on `--llm` (then first name, amount, days overdue and invoice id go to the provider you choose): no account, no SaaS login.
 
 It never suggests paid on a near match of an id or a name: 3,360 adversarial cases in the test suite (near-miss ids and names, refunds in many languages, failed payments, future dates, shared prices). Each scenario is executed and logged by `tests/test_adversarial.py`, and a test compares that logged count with this number. To see the measured count, run `pytest -s tests/test_adversarial.py -k readme_states`. One deliberate exception: a payment that carries your exact invoice id is suggested even if the payer is someone else (you see the payer and decide). If it is not sure it says why and waits for you, and a waiting suggestion never hides an unpaid invoice for long: see "stuck" below.
 
@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.13  as of 2026-10-25
+invoice-chaser 1.1.14  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -

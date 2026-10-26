@@ -127,7 +127,7 @@ def test_dollar_sign_with_default_currency_matches(tmp_path):
     inv = INV_HEAD + 'INV-1,Acme Studio,a@b.co,1000,$,2026-09-01,2026-10-01\n'
     wise = WISE_HEAD + '"W1","05-10-2026","1000.00","USD","Acme Studio","INV-1","Acme Studio"\n'
     code, rows = run(tmp_path, inv, wise)
-    assert rows["INV-1"]["status"] == "overdue"                           # "$" alone never silently becomes USD
+    assert rows["INV-1"]["status"] == "needs_review"                      # "$" alone never silently becomes USD; a USD payment naming it is held (1.1.14), never counted
     assert "ambiguous" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     code, rows = run(tmp_path, inv, wise, config={"default_currency": "USD", "sender_email": "me@x.co"})
     assert rows["INV-1"]["status"] == "suggested_paid"

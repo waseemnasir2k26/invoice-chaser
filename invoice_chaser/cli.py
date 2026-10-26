@@ -68,7 +68,7 @@ from .parsers import (
 )
 from .report import render_html, write_status_csv
 from .shellquote import quote
-from .templating import TemplateError, flags_for, load_template, render, variables_for
+from .templating import TemplateError, flags_for, load_template, money, render, variables_for
 
 DEMO_DIR = Path(__file__).resolve().parent / "demo_data"
 DEMO_TODAY = date(2026, 10, 25)
@@ -794,6 +794,12 @@ def _client_item(r, stage, cfg, args, templates_dir, llm_keys: bool, entries, or
         v = variables_for(r, cfg.sender_name, cfg.payment_details)
         line = personal_line(v["first_name"], v["outstanding"], r.days_overdue, inv.id) or ""
     v = variables_for(r, cfg.sender_name, cfg.payment_details, line, reply_days=cfg.reply_within_days, last_reminder=r.last_reminder)
+    found = r.matches or r.suggestions
+    if check_first and r.status == "partial_suggested" and found:  # 1.1.14: the part-payment found is named, and still waits for you
+        amounts = [money(m.amount, m.currency) for m in found]
+        said = (f"a payment of {amounts[0]} was found and is waiting" if len(amounts) == 1 else
+                f"payments of {', '.join(amounts[:-1])} and {amounts[-1]} were found and are waiting")
+        v["outstanding"] = f"{v['outstanding']} ({said} for your check)"
     flags = flags_for(stage, cfg.previous_reminders, r.last_reminder, cfg.pause_work_on_final)
     subject, body = render(load_template(stage, cfg.tone, templates_dir), v, flags)
     base = {"invoice_id": inv.id, "stage": stage, "to": inv.email, "from_name": cfg.sender_name, "from_email": cfg.sender_email}
