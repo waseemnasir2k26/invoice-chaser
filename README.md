@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.14  as of 2026-10-25
+invoice-chaser 1.1.15  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -194,7 +194,7 @@ A payment key can back at most ONE invoice in the ledger. This is checked on eve
 | `1`  | nothing changed: the command was valid but the ledger already said so (`nothing changed` is printed) |
 | `2`  | an error (bad id, refused change, unreadable input), **or** `run` finished with one or more **CRITICAL** notices |
 
-`run` exits with code **2** whenever a CRITICAL notice exists (an orphaned decision, a payment that could be the same as a confirmed one, a double binding, a STUCK_HOLD, an OVERDUE_HELD, a dropped invoice row, ...). Scripts and scheduled jobs should treat 2 as "look at review.html before you act". Warnings and routine notices keep exit code 0.
+`run` exits with code **2** whenever a CRITICAL notice exists (an orphaned decision, a payment that could be the same as a confirmed one, a double binding, a STUCK_HOLD, an OVERDUE_HELD, a missing sender (`NO_SENDER`), a dropped invoice row, ...). Scripts and scheduled jobs should treat 2 as "look at review.html before you act". Warnings and routine notices keep exit code 0.
 
 Every command that writes the ledger reads the file back afterwards and checks that the change is there; if it is not, it says so and exits with an error instead of reporting success.
 
@@ -265,7 +265,7 @@ Header matching ignores case, spaces and punctuation, and quoted multi-line fiel
 
 **Verify your own export.** The Wise column names are written from memory of Wise's statement CSV and were not checked against a fresh export; the Payoneer parser guesses by alias and its sample is synthetic. If your export uses different names, the generic `--bank` mapping works for any CSV and takes a minute to write. Please open an issue with the (redacted) header row if a real file fails.
 
-Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `review_threshold`, `auto_threshold` (ordering only), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `ref_prefixes` (default `["INV", "INVOICE"]`), `decimal_comma`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`, `stuck_after_days` (default 7), `stuck_overdue_days` (default 30). JSON files may carry a BOM. If `sender_email` is missing you get a warning and a banner in `review.html`.
+Config (all keys optional, validated with clear errors): `sender_name`, `sender_email`, `payment_details`, `tone`, `fx_tolerance_pct` (0-20), `date_window_days`, `review_threshold`, `auto_threshold` (ordering only), `stage_days`, `fx_rates`, `bank_mapping`, `default_currency`, `ref_prefixes` (default `["INV", "INVOICE"]`), `decimal_comma`, `previous_reminders`, `pause_work_on_final`, `reply_within_days`, `stuck_after_days` (default 7), `stuck_overdue_days` (default 30). JSON files may carry a BOM. If `sender_email` is missing you get a CRITICAL `NO_SENDER` line on every run (`run` exits 2), a banner in `review.html`, and drafts are still written with the placeholder From address.
 
 Invoices with a missing or invalid email get no draft. They show as "missing email" or "invalid email" in `status.csv` and `review.html`, with a warning on stderr. CSV files may be UTF-8, UTF-8 with BOM, UTF-16 or Windows-1252.
 
@@ -292,7 +292,7 @@ Invoices with a missing or invalid email get no draft. They show as "missing ema
 - **Reminders are not legal notices.** The text is a starting point for politeness; it is not legal or financial advice, and late-payment rules differ by country and contract.
 - **Your edits are safe.** drafts.json stores a hash of every draft it wrote. A draft you edited is never deleted or overwritten: the new one is written beside it as `<name>.new.eml` with a warning. Files that are not ours are never touched.
 - A bad row in your CSV is skipped with a warning and the reason (listed in `review.html`); `--strict` aborts instead. An invoice file with no usable rows stops with "no invoices found" and says why.
-- Every warning has a CODE and a severity, set where it is raised, never guessed from its text (a payer called "Evil (row skipped)" cannot make anything look routine). **Critical** (`ORPHANED_DECISION`, `ID_COLLISION`, `POSSIBLE_DOUBLE_COUNT`, `INVOICE_ROW_DROPPED`, `DUPLICATE_INVOICE_ID`, `CHANGED_INVOICE`) and **warning** notices are printed in full with their code; **routine** ones (`NEGATIVE_ROWS`, `ROWS_SKIPPED_STATUS`, kept drafts) are counted, and the summary counts everything by code. A dropped invoice row is always critical and is named by line and id. Everything is in `review.html`. The missing-`sender_email` warning is printed once per output folder.
+- Every warning has a CODE and a severity, set where it is raised, never guessed from its text (a payer called "Evil (row skipped)" cannot make anything look routine). **Critical** (`ORPHANED_DECISION`, `ID_COLLISION`, `POSSIBLE_DOUBLE_COUNT`, `INVOICE_ROW_DROPPED`, `DUPLICATE_INVOICE_ID`, `CHANGED_INVOICE`, `NO_SENDER`) and **warning** notices are printed in full with their code; **routine** ones (`NEGATIVE_ROWS`, `ROWS_SKIPPED_STATUS`, kept drafts) are counted, and the summary counts everything by code. A dropped invoice row is always critical and is named by line and id. Everything is in `review.html`. The missing-`sender_email` notice is CRITICAL (`NO_SENDER`) and printed on every run.
 - Ambiguous dates like `03/04/2026` are read day-first unless you pass `--date-format`. Timestamps are read as written: a time zone or UTC offset is ignored, so a payment can land a day early or late, which is why matching uses a window of plus or minus one day.
 - The LLM call and the n8n workflow were not exercised against live services.
 

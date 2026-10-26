@@ -237,13 +237,13 @@ def test_warnings_become_one_summary_with_counts(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err
     assert "CRITICAL [INVOICE_ROW_DROPPED]: i.csv line 3 (invoice id 'BAD')" in err            # a dropped invoice is never "routine"
-    assert "Summary: 1 critical (INVOICE_ROW_DROPPED x1)" in err and "1 routine (NEGATIVE_ROWS x1)" in err
+    assert "Summary: 2 critical (INVOICE_ROW_DROPPED x1, NO_SENDER x1), 1 warning (DATE_AMBIGUOUS x1)" in err and "1 routine (NEGATIVE_ROWS x1)" in err
     assert "negative row(s) ignored" not in err                                            # routine: counted, not spelled out
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     assert "negative row(s) ignored" in html and "INVOICE_ROW_DROPPED" in html
 
 
-def test_the_sender_email_warning_is_said_once_per_output_folder(tmp_path, capsys):
+def test_no_sender_is_critical_on_every_run(tmp_path, capsys):
     (tmp_path / "i.csv").write_text(INV_HEAD + "INV-1,Acme,a@b.co,1000,USD,2026-09-01,2026-10-01\n", encoding="utf-8")
     cmd = ["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(tmp_path / "out"), "--today", "2026-10-25"]
     capsys.readouterr()
@@ -253,7 +253,8 @@ def test_the_sender_email_warning_is_said_once_per_output_folder(tmp_path, capsy
     second = capsys.readouterr().err
     main(cmd[:-4] + ["--out", str(tmp_path / "other"), "--today", "2026-10-25"])
     third = capsys.readouterr().err
-    assert "set sender_email in your config" in first and "set sender_email in your config" not in second and "set sender_email in your config" in third
+    # 1.1.15: NO_SENDER is CRITICAL and printed on every run, not once per output folder
+    assert "CRITICAL [NO_SENDER]" in first and "CRITICAL [NO_SENDER]" in second and "CRITICAL [NO_SENDER]" in third
     assert "set sender_email in your config" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")     # the page always says it
 
 

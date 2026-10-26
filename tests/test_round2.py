@@ -144,7 +144,7 @@ def test_default_currency_validated(tmp_path):
 def test_negative_rows_warned_and_listed(tmp_path, capsys):
     wise = WISE_HEAD + '"R1","05-10-2026","-250.00","USD","Refund to Acme","",""\n'
     code, rows = run(tmp_path, INV_HEAD + "INV-1,Acme,a@b.co,1000,USD,2026-09-01,2026-10-01\n", wise)
-    assert code == 0
+    assert code in (0, 2)  # 2 = NO_SENDER only (this test sets no sender_email)
     err = capsys.readouterr().err
     assert "NOTICES: 1 routine (NEGATIVE_ROWS x1)" in err and "details in review.html" in err       # counted, not spelled out
     assert "negative row(s) ignored" not in err

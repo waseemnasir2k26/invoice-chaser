@@ -20,6 +20,7 @@ SEVERITY = {
     "CHANGED_INVOICE": "critical",
     "STUCK_HOLD": "critical",
     "OVERDUE_HELD": "critical",
+    "NO_SENDER": "critical",
     # warning
     "PAYMENT_ROW_DROPPED": "warning",
     "DUPLICATE_PAYMENT_ROW": "warning",
@@ -28,7 +29,6 @@ SEVERITY = {
     "STATE_UNREADABLE": "warning",
     "DEPENDENT_TOTAL": "warning",
     "EMAIL_MISSING": "warning",
-    "SENDER_EMAIL": "warning",
     "DRAFT_STALE": "warning",
     "REJECTION_UNVERIFIED": "warning",
     # routine

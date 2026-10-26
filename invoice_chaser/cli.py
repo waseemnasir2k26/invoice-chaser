@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import load_config, validate
-from .decision import IdIndex, field_texts, visible
+from .decision import IdIndex, canon_id, field_texts, visible
 from .notices import Notice
 from .dedupe import (
     is_hash_id,
@@ -25,7 +25,7 @@ from .dedupe import (
     repeat_of,
     row_matches,
 )
-from .drafts import CHECK_FIRST_DIR, valid_email, write_drafts
+from .drafts import CHECK_FIRST_DIR, PLACEHOLDER_FROM, valid_email, write_drafts
 from .gate import Hold, client_draft_allowed, renamed_match, same_money
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
@@ -348,8 +348,8 @@ def run(args) -> int:
             _warn(warnings, "DEPENDENT_TOTAL", f"{s['invoice_id']}: suggested as FULLY paid only because it adds up with the part-payment of "
                             f"{s['previous_received']} you confirmed earlier. If that earlier confirmation was wrong, this is not paid.")
     if not cfg.sender_email:
-        _warn(warnings, "SENDER_EMAIL", "sender_email is not set: set sender_email in your config file. "
-                        "Drafts use a placeholder From address until you do.")
+        _warn(warnings, "NO_SENDER", f"NO_SENDER: sender_email is not set: set sender_email in your config file before you send anything. "
+                        f"Drafts are still written, with the placeholder From address {PLACEHOLDER_FROM}.")
     if args.llm and not llm_keys:
         notes.append("note: --llm is set but neither GROQ_API_KEY nor GEMINI_API_KEY was found; "
                      "templates are used as written")
@@ -625,10 +625,6 @@ def _print_warnings(warnings: list, out: Path) -> None:
     shown, counts = [], {"critical": {}, "warning": {}, "routine": {}}
     for w in warnings:
         code, sev = getattr(w, "code", "NOTE"), getattr(w, "severity", "warning")
-        if code == "SENDER_EMAIL" and seen_notices.get("sender_email"):
-            continue  # said once per output folder, then remembered
-        if code == "SENDER_EMAIL":
-            seen_notices["sender_email"] = True
         counts[sev][code] = counts[sev].get(code, 0) + 1
         if sev != "routine":
             shown.append((sev, code, str(w)))
@@ -853,7 +849,7 @@ def _status_ids(out: Path):
     if not status.exists():
         return None
     with open(status, newline="", encoding="utf-8") as fh:
-        return {row["invoice_id"].strip().lower(): row["invoice_id"] for row in csv.DictReader(fh)}
+        return {canon_id(row["invoice_id"]).lower(): canon_id(row["invoice_id"]) for row in csv.DictReader(fh)}
 
 
 def _refuse_duplicate_ids(out: Path, wanted: str) -> None:
@@ -862,7 +858,7 @@ def _refuse_duplicate_ids(out: Path, wanted: str) -> None:
         return
     with open(status, newline="", encoding="utf-8") as fh:
         ids = [row["invoice_id"] for row in csv.DictReader(fh)]
-    clash = sorted({i for i in ids if " ".join(i.casefold().split()) == " ".join(wanted.casefold().split())})
+    clash = sorted({canon_id(i) for i in ids if canon_id(i).casefold() == canon_id(wanted).casefold()})
     if len(clash) > 1:
         raise ValueError(f"invoice ids are not unique ({' / '.join(clash)}): fix invoices.csv first, then run again")
 
@@ -873,7 +869,7 @@ def _resolve_invoice(args) -> tuple[str, date]:
     Ids match ignoring case and spaces, against out/status.csv. An unknown id, or a missing
     status.csv, is refused unless --force. Dates in the future are refused."""
     out = Path(args.out)
-    wanted = args.invoice.strip()
+    wanted = canon_id(args.invoice)  # 1.1.15: "INV–1103" is typed as "INV-1103"
     _refuse_duplicate_ids(out, wanted)
     status = out / "status.csv"
     invoice_id = wanted

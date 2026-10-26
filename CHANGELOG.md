@@ -1,3 +1,14 @@
+## 1.1.15 - 2026-10-26
+
+Unicode dashes name the invoice, a number in a payment holds its invoice, and a missing sender is critical.
+
+- **Unicode dashes and spaces name the invoice (blocker).** `INV–1103` (en dash), `INV‑1104` (non-breaking hyphen) and every other Unicode dash, minus or fullwidth hyphen now match `INV-1103`. Space-like characters count as spaces, invisible characters are ignored, and text is NFKC-normalised and casefolded before any invoice-id or refund-wording check. Invoice ids are stored in the same form at ingest and in every command argument, so `mark-paid "INV–1103"` works and an en-dash id cannot duplicate an ASCII one.
+- **Safety net for a number (structural).** A payment whose text carries an active invoice's number (a run of 3+ digits in its id) as a whole token, where the strict id rule does not name that invoice, holds that invoice: `needs_review` with "a payment mentions 1107: check it". It is never a suggested payment, so no reminder goes to `drafts/`; a CHECK FIRST draft is written after the stuck window, and OVERDUE_HELD applies past 30 days. The payment is listed so that `reject` can say it is not this invoice's.
+- **Greeting never uses an e-mail address.** A blank `contact` greets "there"; an e-mail typed in the contact column is ignored as a name.
+- **Missing sender is CRITICAL (`NO_SENDER`).** Printed on every run, `run` exits 2, and drafts are still written with the placeholder From address. It was a once-per-folder warning before.
+
+Upgrade note: an invoice id with an en dash or other Unicode dash is written in ASCII from 1.1.15 on. A confirmation recorded under the old id shows as an ORPHANED_DECISION until you `rebind` or `forget` it once.
+
 ## 1.1.14 - 2026-10-26
 
 A payment in another currency that names an invoice id now holds that invoice.

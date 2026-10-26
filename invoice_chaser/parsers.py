@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .decision import company_key
+from .decision import canon_id, company_key
 from .models import Invoice, Payment
 from .notices import Notice
 
@@ -341,7 +341,7 @@ def read_invoices(path: str | Path, opts: ParseOptions | None = None) -> list[In
             continue
         try:
             inv = Invoice(
-                id=_get(r, c_id),
+                id=canon_id(_get(r, c_id)),  # 1.1.15: an en dash or NBSP in an id is the same id
                 client=_get(r, c_client),
                 email=_get(r, c_email),
                 amount=parse_amount(_get(r, c_amt), opts.decimal_comma),

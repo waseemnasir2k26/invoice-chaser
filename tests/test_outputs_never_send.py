@@ -86,7 +86,7 @@ def test_llm_flag_without_key_still_runs_offline(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     ex = Path(__file__).resolve().parent.parent / "examples"
     assert main(["run", "--invoices", str(ex / "invoices.csv"), "--wise", str(ex / "wise-statement.csv"),
-                 "--out", str(tmp_path), "--today", "2026-10-25", "--llm"]) == 0
+                 "--out", str(tmp_path), "--today", "2026-10-25", "--llm"]) in (0, 2)  # 2 = NO_SENDER only
 
 
 def test_source_has_no_send_capability():

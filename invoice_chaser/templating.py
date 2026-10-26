@@ -72,9 +72,11 @@ def render(template: str, variables: dict[str, str], flags=frozenset()) -> tuple
 
 def first_name(res: InvoiceResult) -> str:
     """First name from the optional `contact` column. Company names are never guessed
-    into a first name; without a contact the greeting falls back to "there"."""
+    into a first name, and an e-mail address is never used as a name: without one the greeting falls back to "there"."""
     contact = res.invoice.contact.strip()
-    return contact.split()[0] if contact else ""
+    if not contact or "@" in contact:
+        return ""
+    return contact.split()[0]
 
 
 def money(amount, currency: str) -> str:

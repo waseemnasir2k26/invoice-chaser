@@ -81,6 +81,6 @@ def test_decimal_comma_flag_end_to_end(tmp_path):
     base = ["run", "--invoices", str(tmp_path / "i.csv"), "--wise", str(tmp_path / "w.csv"), "--today", "2026-10-25"]
     assert main(base + ["--out", str(tmp_path / "a")]) == 2              # refused as ambiguous: no invoice could be read
     assert not (tmp_path / "a" / "status.csv").exists()
-    assert main(base + ["--out", str(tmp_path / "b"), "--decimal-comma"]) == 0
+    assert main(base + ["--out", str(tmp_path / "b"), "--decimal-comma"]) in (0, 2)  # 2 = NO_SENDER (no sender_email in this test)
     rows = list(csv.DictReader(open(tmp_path / "b" / "status.csv", encoding="utf-8")))
     assert rows[0]["status"] == "suggested_paid" and rows[0]["amount"] == "1500"

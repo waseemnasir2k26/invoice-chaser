@@ -113,7 +113,7 @@ def _write_invoices(path, email):
 def test_bad_email_means_no_draft_and_visible_status(tmp_path, capsys, email, label):
     _write_invoices(tmp_path / "i.csv", email)
     out = tmp_path / "out"
-    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(out), "--today", "2026-10-25"]) == 0
+    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(out), "--today", "2026-10-25"]) in (0, 2)  # 2 = NO_SENDER
     assert list((out / "drafts").glob("*.eml")) == []
     row = next(csv.DictReader(open(out / "status.csv", encoding="utf-8")))
     assert row["draft_status"] == label and row["draft_file"] == ""
@@ -165,7 +165,9 @@ def test_missing_sender_email_warns_loudly(tmp_path, capsys):
     _write_invoices(tmp_path / "i.csv", "a@b.co")
     out = tmp_path / "o"
     main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(out), "--today", "2026-10-25"])
-    assert "set sender_email in your config" in capsys.readouterr().err
+    assert main(["run", "--invoices", str(tmp_path / "i.csv"), "--out", str(out), "--today", "2026-10-25"]) == 2
+    err = capsys.readouterr().err
+    assert "CRITICAL [NO_SENDER]" in err and "set sender_email in your config" in err
     assert "set sender_email in your config" in (out / "review.html").read_text(encoding="utf-8")
     assert "set-sender-email@example.invalid" in (out / "drafts" / "X-1-final.eml").read_text(encoding="utf-8")
 

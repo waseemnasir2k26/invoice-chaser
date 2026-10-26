@@ -34,6 +34,7 @@ from .decision import (
     company_key,
     field_texts,
     has_negative_context,
+    normalise,
     same_company,
 )
 from .ladder import days_overdue, stage_for
@@ -298,6 +299,51 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     index = IdIndex((i.id for i in invoices), cfg.ref_prefixes)  # all ids: a paid invoice's id still makes a payment ambiguous
     infos = [_info_for(p, index) for p in payments]
 
+    # 1.1.15 SAFETY NET. An active invoice's number (each run of 3+ digits in its id) appearing in a payment as a whole token, where the
+    # strict id rule does NOT name that invoice (INVOICE#1107 for INV-1107, "inv no. 1107", "#1107"), holds that invoice: needs_review,
+    # never a suggestion, whatever else the payment matches. A payment the user rejected for that invoice does not hold it.
+    inv_runs: dict[str, tuple[str, ...]] = {}
+    num_of: dict[str, list[str]] = defaultdict(list)
+    for i in invoices:
+        if i.status in SETTLED or i.status in VOID:
+            continue
+        runs = tuple(sorted({r for r in re.findall(r"\d+", normalise(i.id)) if len(r) >= 3}))
+        inv_runs[i.id] = runs
+        for run in runs:
+            num_of[run].append(i.id)
+    tok_cache: dict[int, frozenset] = {}
+
+    def _mention_tokens(pi: int) -> frozenset:
+        t = tok_cache.get(pi)
+        if t is None:
+            found: set[str] = set()
+            for text in field_texts(payments[pi].description, payments[pi].payer):
+                found.update(re.findall(r"\d+", normalise(text)))
+            t = tok_cache[pi] = frozenset(found)
+        return t
+
+    def _net_hit(iid: str, pi: int) -> bool:
+        """True when payment pi mentions the number of invoice iid without the strict rule naming iid (and the user did not reject it)."""
+        if iid in infos[pi].ids:
+            return False
+        if excluded and (iid.strip().lower(), f"{payments[pi].source}:{payments[pi].id}") in excluded:
+            return False
+        return any(r in _mention_tokens(pi) for r in inv_runs.get(iid, ()))
+
+    net_msgs: dict[str, str] = {}  # invoice id -> the hold message
+    net_first: dict[str, int] = {}  # invoice id -> the first payment that held it (listed so that `reject` can name it)
+    if num_of:  # the hot loop: set intersection in C, then only the matching numbers
+        for pi in range(len(payments)):
+            named = infos[pi].ids
+            for tok in _mention_tokens(pi) & num_of.keys():
+                for iid in num_of[tok]:
+                    if iid in net_msgs or iid in named:
+                        continue
+                    if excluded and (iid.strip().lower(), f"{payments[pi].source}:{payments[pi].id}") in excluded:
+                        continue
+                    net_msgs[iid] = f"a payment mentions {tok}: check it"
+                    net_first[iid] = pi
+
     by_cur: dict[str, list[int]] = {}
     for pi, p in enumerate(payments):
         by_cur.setdefault(p.currency, []).append(pi)
@@ -394,6 +440,8 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
             rate = rates.get(p.currency)
             if rate is None or len(infos[pi].ids) > MAX_NAMED or (inv.id.strip().lower(), f"{p.source}:{p.id}") in excluded:
                 continue  # a payment that names many invoices is never paired with any of them
+            if inv.id in net_msgs and _net_hit(inv.id, pi):
+                continue  # 1.1.15: a payment the safety net holds this invoice for is never evidence for it
             sc = _score(ctx, p, infos[pi], cfg, rate)
             if sc.date_problem:
                 if sc.confidence >= cfg.review_threshold:
@@ -448,6 +496,13 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
                                        payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
                                        named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
 
+    for iid, pi in net_first.items():  # 1.1.15: the held payment is listed as a candidate, so `reject` can say it is not this invoice's
+        p = payments[pi]
+        if len(suggested[iid]) < 2 and not any(m.payment_id == p.id and m.source == p.source for m in suggested[iid]):
+            suggested[iid].append(Match(iid, p.id, p.date, p.description, 0.0, "payment mentions the invoice number",
+                                        blocker=net_msgs[iid], payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
+                                        named=tuple(sorted(infos[pi].ids)), suspect=p.suspect))
+
     results = []
     for inv in invoices:
         tol = inv.amount * tolpct
@@ -479,6 +534,10 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         else:
             st, out = "open", inv.amount
             why = f"not due until {inv.due.isoformat()}"
+        if inv.id in net_msgs:  # 1.1.15: the safety net holds it, whatever else matched: never suggested paid, never a reminder
+            st, out, stage = "needs_review", inv.amount, None
+            if net_msgs[inv.id] not in why:
+                why = net_msgs[inv.id] + (f"; {why}" if why else "")
         if ms:
             conf = min(m.confidence for m in ms)
         elif sg:

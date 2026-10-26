@@ -78,8 +78,45 @@ PHRASES = (
 _CREDIT_NOTE = {"note", "notes", "memo", "nota"}
 
 
+# Dashes that are not category Pd (U+2212 minus sign, small/fullwidth hyphen forms). Pd covers U+2010-2015 and the rest.
+_EXTRA_DASHES = frozenset("−﹘﹣－")
+
+
+def _map_chars(s: str) -> str:
+    """NFKC, every dash to "-", every space-like character (Zs) to " ", invisible characters (Cf) removed. No case change."""
+    if (s or "").isascii():  # fast path: ASCII has no Cf and its only Zs is the space; NFKC and dashes are identity/"-" already
+        return s or ""
+    out = []
+    for ch in unicodedata.normalize("NFKC", s or ""):
+        cat = unicodedata.category(ch)
+        if cat == "Pd" or ch in _EXTRA_DASHES:
+            out.append("-")
+        elif cat == "Zs":
+            out.append(" ")
+        elif cat != "Cf":
+            out.append(ch)
+    return "".join(out)
+
+
+@lru_cache(maxsize=8192)
+def _normalise_cached(s: str) -> str:
+    return _map_chars(s).casefold()
+
+
+def normalise(s: str) -> str:
+    """The ONE normalisation before any invoice-id or refund-wording matching: NFKC, dashes to "-", spaces to " ", invisible
+    characters stripped, casefolded. "INV–1103" (en dash), "INV‑1104" (non-breaking hyphen) and "inv-1104" are the same text."""
+    return _normalise_cached(s or "")
+
+
+def canon_id(s: str) -> str:
+    """Invoice ids are stored in this form (ingest and every command argument): NFKC, dashes and spaces mapped, invisible characters
+    removed, surrounding space stripped. Case is kept for display; comparisons use .lower() of this."""
+    return " ".join(_map_chars(s).split())
+
+
 def _nfkc(s: str) -> str:
-    return unicodedata.normalize("NFKC", s or "")
+    return normalise(s)
 
 
 def parts_of(s: str) -> tuple[str, ...]:
