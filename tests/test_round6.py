@@ -130,7 +130,7 @@ def test_identical_rows_in_two_exports_are_kept_and_flagged_not_merged(tmp_path,
     err = capsys.readouterr().err
     assert "identical in two of your exports" in err
     assert rows["INV-1"]["status"] == "needs_review"
-    assert "identical payment found in two exports: one real payment or two?" in rows["INV-1"]["why_not_paid"]
+    assert "may be the same payment as wise" in rows["INV-1"]["why_not_paid"]
     assert "identical in two of your exports" in (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
 
 
@@ -183,7 +183,7 @@ def test_the_stuck_note_says_first_seen_today_and_days_overdue(tmp_path):
     setup(tmp_path, "INV-1,Acme Studio,a@acme.example,1000,USD,2026-08-01,2026-09-10\n",
           '"W1","12-09-2026","1000.00","USD","Payment INV-1","INV-1","Acme Studio"\n')
     run(tmp_path)
-    note = (tmp_path / "out" / "drafts" / "INV-1-check.eml").read_text(encoding="utf-8").replace("=\n", "")
+    note = (tmp_path / "out" / "drafts" / "internal" / "INV-1-check.eml").read_text(encoding="utf-8").replace("=\n", "")
     assert "first seen today" in note and "0 day(s)" not in note and "45 days overdue" in note
     assert "Subject: Check INV-1: first seen today, 45 days overdue" in note
 

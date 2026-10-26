@@ -26,7 +26,7 @@ from .dedupe import (
     row_matches,
 )
 from .drafts import CHECK_FIRST_DIR, valid_email, write_drafts
-from .gate import Hold, client_draft_allowed, same_money
+from .gate import Hold, client_draft_allowed, renamed_match, same_money
 from .ladder import STAGES, days_overdue, stage_for
 from .ledger import (
     apply_confirmations,
@@ -257,6 +257,8 @@ def run(args) -> int:
     results, leftovers, early = match_all_ex(engine_invoices, payments, today, cfg, excluded)
     for r in results:
         r.invoice = by_exact[r.invoice.id]
+    # the payment evidence of every invoice, kept before the decisions below clear it: the holds that stop a client draft come from it
+    evidence = {r.invoice.id.strip().lower(): [*r.matches, *r.suggestions] for r in results}
 
     # ---- the ledger decides paid / partial; a changed invoice goes back to review ----
     for r in results:
@@ -346,7 +348,7 @@ def run(args) -> int:
         notes.append("note: --llm is set but neither GROQ_API_KEY nor GEMINI_API_KEY was found; "
                      "templates are used as written")
 
-    holds, gate_ledger = _build_holds(results, orphans, double_held, invoices, paid_marks, received_marks)
+    holds, gate_ledger = _build_holds(results, orphans, double_held, invoices, paid_marks, received_marks, evidence)
     items = []
     for r in results:
         entries = ledger.get(r.invoice.id.strip().lower())
@@ -433,7 +435,7 @@ def run(args) -> int:
               f"{' or `confirm --all-strong`' if any(s['kind'] == 'paid' for s in strong) else ''}")
     if stuck:
         print(f"  !! {len(stuck)} invoice(s) STUCK waiting for your decision: oldest {stuck[0].invoice.id}, "
-              f"{stuck[0].days_overdue} days overdue. Decide with confirm / reject / mark-paid (a note to you is in drafts/).")
+              f"{stuck[0].days_overdue} days overdue. Decide with confirm / reject / mark-paid (a note to you is in drafts/internal/).")
     print(f"  {n_client} draft(s) written (nothing sent) -> {out / 'drafts'}")
     if check_first:
         print(f"  {len(check_first)} CHECK FIRST reminder(s) written -> {out / 'drafts' / CHECK_FIRST_DIR}: verify the possible payment before sending")
@@ -545,16 +547,15 @@ def _find_orphans(lpath: Path, payments: list, invoices: list, id_index: IdIndex
                 hold = {inv} | {n for c in cands for n in c["named"]}
                 out.append({"kind": "payment", "decision": "rejected", "old": key, "invoice": inv, "row": row, "snapshot": {},
                             "candidates": cands, "hold": sorted(hold)})
-    for inv_lower, snap in snapshots.items():
+    for inv_lower, snap in snapshots.items():  # a confirmed invoice whose id is gone: every current invoice that may be it renamed or edited
         inv_id = real_ids[inv_lower]
         if not snap or inv_lower in today_ids:
             continue
-        same = [i for i in invoices if i.client.strip().casefold() == str(snap.get("client", "")).strip().casefold()
-                and str(i.amount) == str(snap.get("amount")) and i.currency == snap.get("currency") and i.due.isoformat() == snap.get("due")
-                and i.id.strip().lower() not in snapshots]
-        for i in same:
-            out.append({"kind": "invoice", "decision": "confirmed", "old": inv_id, "new": i.id, "invoice": i.id, "row": {}, "snapshot": snap,
-                        "candidates": [], "hold": [i.id]})
+        for i in invoices:
+            why = renamed_match(snap, inv_id, i)
+            if why:
+                out.append({"kind": "invoice", "decision": "confirmed", "old": inv_id, "new": i.id, "invoice": i.id, "row": {}, "snapshot": snap,
+                            "candidates": [], "hold": [i.id], "why": why})
     for o in out:  # a payment that may be the confirmed one must never be suggested for anything meanwhile
         for c in o["candidates"]:
             for p in payments:
@@ -570,8 +571,8 @@ def _orphan_text(o: dict) -> str:
     holds = ", ".join(o["hold"])
     if o["kind"] == "invoice":
         return (f"ORPHANED_DECISION: you confirmed invoice {o['old']} ({who}), but there is no invoice {o['old']} in invoices.csv any more, while "
-                f"{o['new']} has the same client, amount and due date. Nothing is moved automatically. If it is the same invoice renamed: "
-                f"`invoice-chaser rebind {quote(o['old'])} {quote(o['new'])}`; if not: `invoice-chaser forget {quote(o['old'])}`. "
+                f"{o['new']} may be it renamed or edited ({'; '.join(o.get('why', []))}). Nothing is moved automatically. If it is the same "
+                f"invoice: `invoice-chaser rebind {quote(o['old'])} {quote(o['new'])}`; if not: `invoice-chaser forget {quote(o['old'])}`. "
                 f"Until you decide, {holds} is held in needs review with no reminder.")
     row = o["row"]
     cands = "; ".join(f"{c['key']} ({c['date']}, {c['amount']} {c['currency']}, payer {c['payer'] or 'none'}; names "
@@ -667,7 +668,7 @@ def _age_and_stick(results, out: Path, cfg, today: date, warnings: list[str]) ->
     atomic_write_text(seen_file, json.dumps({"schema": SEEN_SCHEMA, "invoices": now}, indent=2, sort_keys=True))
 
 
-def _build_holds(results, orphans: list[dict], double_held: dict, invoices, paid_marks: dict, received_marks: dict):
+def _build_holds(results, orphans: list[dict], double_held: dict, invoices, paid_marks: dict, received_marks: dict, evidence: dict):
     """Every reason an invoice waits for you, as Hold records, plus the confirmations the gate reads. Built once per run, after every
     status is final. client_draft_allowed decides from these; nothing else decides whether a client may be written to."""
     holds: list[Hold] = []
@@ -680,7 +681,7 @@ def _build_holds(results, orphans: list[dict], double_held: dict, invoices, paid
         key = r.invoice.id.strip().lower()
         if r.status in HELD:
             holds.append(Hold("review", key, frozenset({key}), r.why_not_paid or r.note))
-        cands = list(r.matches) + list(r.suggestions)
+        cands = evidence.get(key, [])  # before any decision cleared it: an orphan hold must not hide a possible double count
         if any(DOUBLE_COUNT.search(m.suspect or "") for m in cands):
             holds.append(Hold("double_count", key, frozenset({key}),
                               "a possible double count of another payment: the money may have arrived"))

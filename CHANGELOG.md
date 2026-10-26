@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.11 - 2026-10-26
+
+Two blockers from the judge review: a renamed-and-edited invoice and a double payment across two exports of one source no longer slip through; notes to you live apart from client drafts.
+
+- **Renamed and edited is still an orphan (blocker).** When a confirmed invoice id is gone from invoices.csv, every current invoice that may be it is held as an `ORPHANED_DECISION` candidate (CRITICAL, `run` exits 2, no client draft, and the exact `rebind` / `forget` commands). "May be it" is any one of: the same client (`company_words`: punctuation, capitals, spacing, a leading "The" and the legal suffix ignored); the same amount and currency; an id within two edits of the old id (`edit_distance`). The gate uses the same test (`gate.renamed_match`), so `Renamed Co` to `Renamed Co.`, `Renamed  Co`, or 350 to 400 get no client draft. Deliberately wide: short ids such as `INV-A` and `INV-N` are one edit apart, so one orphan can hold a few similar invoices.
+- **A payment hold is never hidden by an orphan hold (fix).** The double-count and refund-name holds were built from the matches after the orphan branch had cleared them. They are now built from the evidence captured before any decision clears it, so STUCK_HOLD still fires for them.
+- **Same payment in two files of one source (blocker).** Two Wise statements (or two bank exports) of one payment are now a possible double count, held in needs review: (a) the same transfer id with identical data in two different files is kept on both rows instead of silently dropping one; (b) identical amount and currency, within a day, the same payer company, in two different files of one source is flagged. Rows inside ONE file are counted separately as before, and a repeated real id inside one file is still dropped with its warning. Payer matching across files uses the same looser company words as the gate. `Payment.file_no` records which file a row came from.
+- **Partial remainders (ruled).** A remainder reminder after a partial confirmation is correct and stays. The README says so.
+- **Internal notes in `drafts/internal/` (minor).** The `-check.eml` notes to you are written to `out/drafts/internal/`, not `out/drafts/`, so they cannot be mistaken for client drafts. The README, the review page, `mark-sent` and the tests use the new folder. An unedited 1.1.10 note in `drafts/` is removed on the next run.
+
 ## 1.1.10 - 2026-10-26
 
 One gate for every client draft, and the stuck-hold cases that were still silent.

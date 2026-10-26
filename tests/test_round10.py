@@ -206,12 +206,12 @@ def test_an_invoice_id_rename_is_an_orphaned_decision_and_never_a_reminder(tmp_p
     setup(tmp_path, TWO, ROW_A)
     run(tmp_path)
     cmd(tmp_path, "confirm", "INV-101")
-    (tmp_path / "i.csv").write_text(INV_HEAD + TWO.replace("INV-101,", "INV-1011,"), encoding="utf-8")        # same client, amount and due date
+    (tmp_path / "i.csv").write_text(INV_HEAD + TWO.replace("INV-101,", "INV-1011,"), encoding="utf-8")        # same client, amount and currency (the due date and the payment id differ too)
     (tmp_path / "w.csv").write_text(WISE_HEAD + "", encoding="utf-8")                                    # and the payment is not in this export
     capsys.readouterr()
     rows = run(tmp_path)
     err = capsys.readouterr().err
-    assert "CRITICAL [ORPHANED_DECISION]" in err and "INV-1011 has the same client, amount and due date" in err
+    assert "CRITICAL [ORPHANED_DECISION]" in err and "INV-1011 may be it renamed or edited (same client" in err
     assert "invoice-chaser rebind INV-101 INV-1011" in err and "invoice-chaser forget INV-101" in err
     assert rows["INV-1011"]["status"] == "needs_review" and rows["INV-1011"]["draft_file"] == ""           # overdue, but never chased
     assert cmd(tmp_path, "rebind", "INV-101", "INV-WRONG") == 2

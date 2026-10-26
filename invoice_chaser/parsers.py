@@ -405,6 +405,7 @@ class _Ids:
 
     def payment(self, source: str, real_id: str, d: date, amount: Decimal, currency: str, description: str, payer: str) -> Payment:
         pay = Payment(real_id or "h-pending", d, amount, currency, description, payer, source)
+        pay.file_no = self.file_no
         if not real_id:
             clean = lambda t: " ".join(re.sub(r"[\W_]+", " ", (t or "").casefold()).split())
             ck = company_key(payer) if payer else None

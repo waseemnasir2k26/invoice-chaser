@@ -152,7 +152,7 @@ def _stuck_section(results: list[InvoiceResult], out_hint: str) -> str:
     oldest = stuck[0]
     return (f"<div class=stuck><strong>{len(stuck)} invoice{'s' if len(stuck) != 1 else ''} stuck waiting for your decision</strong> "
             f"<span class=small>oldest: {e(oldest.invoice.id)}, {e(oldest.days_overdue)} days overdue. No reminder goes out while a payment is "
-            f"suggested, so decide: confirm it, reject it, or mark it paid. A \"check this one\" note to you is in drafts/.</span></div>"
+            f"suggested, so decide: confirm it, reject it, or mark it paid. A \"check this one\" note to you is in drafts/internal/.</span></div>"
             "<div class=wrap><table><tr><th>Invoice</th><th>Client</th><th>Outstanding</th><th>Days overdue</th><th>Waiting (days)</th>"
             "<th>Why</th><th>Your decision</th></tr>" + rows + "</table></div>")
 

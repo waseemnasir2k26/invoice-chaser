@@ -39,6 +39,7 @@ def build_eml(to: str, sender_name: str, sender_email: str, subject: str, body: 
 EMAIL_RE = re.compile(r"^[^@\s,;<>()\[\]\"]+@[^@\s,;<>()\[\]\".]+(\.[^@\s,;<>()\[\]\".]+)*\.[^@\s,;<>()\[\]\".]{2,}$")
 PLACEHOLDER_FROM = "set-sender-email@example.invalid"
 CHECK_FIRST_DIR = "check-first"  # client reminders drafted for a held invoice: drafts/check-first/, never drafts/
+INTERNAL_DIR = "internal"  # notes to YOU (the -check.eml files): drafts/internal/, never a client draft
 
 
 def valid_email(s: str) -> bool:
@@ -50,10 +51,11 @@ def _sha(path: Path) -> str:
 
 
 def _is_draft_name(n: str) -> bool:
-    """A draft we may have written: `<name>.eml` in drafts/, or `check-first/<name>.eml`. Anything else is never touched."""
+    """A draft we may have written: `<name>.eml` in drafts/, `check-first/<name>.eml` or `internal/<name>.eml`. Anything else is never
+    touched. (A root-level `-check.eml` from 1.1.10 is still recognised, so an unedited one is removed on the next run.)"""
     parts = n.split("/")
     return (n.endswith(".eml") and "\\" not in n and all(p not in ("", ".", "..") for p in parts)
-            and (len(parts) == 1 or (len(parts) == 2 and parts[0] == CHECK_FIRST_DIR)))
+            and (len(parts) == 1 or (len(parts) == 2 and parts[0] in (CHECK_FIRST_DIR, INTERNAL_DIR))))
 
 
 def _previous(out_dir: Path) -> dict[str, tuple[str, str]]:
@@ -117,7 +119,7 @@ def write_drafts(items: list[dict], out_dir: Path, warnings: list[str] | None = 
     used: set[str] = set()
     for it in items:
         msg = build_eml(it["to"], it["from_name"], it["from_email"] or PLACEHOLDER_FROM, it["subject"], it["body"])
-        sub = CHECK_FIRST_DIR if it.get("check_first") else ""  # a CHECK FIRST reminder lives in drafts/check-first/
+        sub = CHECK_FIRST_DIR if it.get("check_first") else (INTERNAL_DIR if it.get("internal") else "")  # notes to you: drafts/internal/
         rel = (lambda nm: f"{sub}/{nm}.eml") if sub else (lambda nm: f"{nm}.eml")
         stem = f"{safe_name(it['invoice_id'])}-{it['stage']}"
         name, n = stem, 2

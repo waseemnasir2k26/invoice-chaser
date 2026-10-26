@@ -8,7 +8,7 @@ from test_v118 import (INV_HEAD, JUDGE_INV, ROW_A, TWO, WISE_HEAD, check_first_f
 
 
 def _drafts(tmp_path) -> list[str]:
-    return sorted(p.name for p in (tmp_path / "out" / "drafts").glob("*.eml"))
+    return sorted(p.relative_to(tmp_path / "out" / "drafts").as_posix() for p in (tmp_path / "out" / "drafts").rglob("*.eml"))
 
 
 def test_judge_repro_confirmed_then_changed_gets_no_client_draft_anywhere(tmp_path):
@@ -21,8 +21,8 @@ def test_judge_repro_confirmed_then_changed_gets_no_client_draft_anywhere(tmp_pa
     assert rows["INV-Z"]["status"] == "needs_review"
     assert rows["INV-Z"]["days_overdue"] == "182"
     assert check_first_files(tmp_path) == []                           # no [CHECK FIRST] client reminder
-    assert _drafts(tmp_path) == ["INV-Z-check.eml"]                    # the only file is the internal note to you
-    subject, body = body_of(tmp_path / "out" / "drafts" / "INV-Z-check.eml")
+    assert _drafts(tmp_path) == ["internal/INV-Z-check.eml"]          # the only file is the internal note to you, in drafts/internal/
+    subject, body = body_of(tmp_path / "out" / "drafts" / "internal" / "INV-Z-check.eml")
     assert "You confirmed this paid on 2026-09-20, but the invoice changed: re-confirm or unmark." in body
     assert "re-confirm or unmark" in body and "not sent to the client" in body
     assert "CHECK FIRST" not in subject

@@ -29,6 +29,7 @@ class Payment:
     payer: str
     source: str
     suspect: str = ""  # set when this row may duplicate another: never auto-matched
+    file_no: int = 0  # which export file of this run the row came from (0 = unknown); two rows of one file are never "two files"
 
 
 @dataclass

@@ -67,7 +67,7 @@ def test_judge_case_stuck_held_invoice_gets_a_check_first_reminder_and_no_plain_
     assert code == 0 and rows["INV-Z"]["status"] == "needs_review"
     files = check_first_files(tmp_path)
     assert len(files) == 1 and files[0].startswith("INV-Z-") and files[0].endswith(".eml")
-    drafts = sorted(p.name for p in (tmp_path / "out" / "drafts").glob("INV-Z*.eml"))
+    drafts = sorted(p.name for p in (tmp_path / "out" / "drafts" / "internal").glob("INV-Z*.eml"))
     assert drafts == ["INV-Z-check.eml"]                             # no client draft in drafts/; the internal note stays
     subject, body = body_of(tmp_path / "out" / "drafts" / "check-first" / files[0])
     assert subject.startswith("[CHECK FIRST] ")
@@ -133,7 +133,7 @@ def test_no_client_draft_rule_for_double_bound_and_double_counted_payments():
 
     def _no_client_draft(r, double_held):
         # 1.1.10: the gate decides; '' = a CHECK FIRST draft may be written
-        holds, gate = _build_holds([r], [], double_held, [r.invoice], {}, {})
+        holds, gate = _build_holds([r], [], double_held, [r.invoice], {}, {}, {r.invoice.id.lower(): [*r.matches, *r.suggestions]})
         ok, reason = client_draft_allowed(r.invoice, gate, holds)
         return "" if ok else reason
 

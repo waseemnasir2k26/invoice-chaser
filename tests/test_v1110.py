@@ -25,11 +25,12 @@ INVOICES = (
     "INV-Z,Quiet Co,z@q.example,300,USD,2026-06-01,2026-07-01\n"
     "INV-R,Refund Ltd,r@r.example,400,USD,2026-06-01,2026-07-01\n"
     "INV-D,Dup Co,d@d.example,250,USD,2026-06-01,2026-07-01\n"
-    "INV-A,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n"
+    "ACME-77,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n"
     "INV-B,Bound Co,b@b.example,200,USD,2026-06-01,2026-07-01\n"
     "INV-C,Bound Two,c@c.example,200,USD,2026-06-01,2026-07-01\n"
     "INV-N,Normal Co,n@n.example,150,USD,2026-06-01,2026-07-01\n"
     "INV-P,Changed Co,p@p.example,120,USD,2026-06-01,2026-07-01\n"
+    "FAR-7,Faraway Ltd,f@f.example,7771,EUR,2026-06-01,2026-07-01\n"  # unrelated: no client, amount or id near ACME-77
 )
 
 
@@ -58,8 +59,8 @@ def test_gate_part_payment_is_no_block_unless_the_invoice_is_held():
 
 
 def test_gate_orphaned_decision_blocks_every_invoice_it_references():
-    holds = [Hold("orphan", "", frozenset({"inv-a2", "inv-x"}), "ORPHANED_DECISION")]
-    assert not client_draft_allowed(inv("INV-A2"), {}, holds)[0]                 # the renamed invoice
+    holds = [Hold("orphan", "", frozenset({"acme-78", "inv-x"}), "ORPHANED_DECISION")]
+    assert not client_draft_allowed(inv("ACME-78"), {}, holds)[0]                 # the renamed invoice
     assert not client_draft_allowed(inv("INV-X"), {}, holds)[0]                  # an invoice a candidate names
     assert client_draft_allowed(inv("INV-Q"), {}, holds) == (True, "")
 
@@ -72,17 +73,17 @@ def test_gate_blocks_payment_holds_on_their_own_invoice_only(kind):
     assert client_draft_allowed(inv("INV-2"), {}, holds) == (True, "")
 
 
-def test_gate_renamed_confirmed_invoice_with_same_client_amount_and_currency_is_blocked():
+def test_gate_renamed_confirmed_invoice_is_blocked_by_client_or_amount_or_near_id():
     ledger = {"inv-old": {"kind": "paid", "date": "2026-09-20", "gone": True,
                           "snapshot": {"client": "Acme", "amount": "100.00", "currency": "USD", "due": "2026-07-01"}}}
-    assert not client_draft_allowed(inv("INV-NEW"), ledger, [])[0]               # due date changed too: no orphan hold, still blocked
-    assert client_draft_allowed(inv("INV-NEW", amount="101"), ledger, [])[0]
-    assert client_draft_allowed(inv("INV-NEW", cur="EUR"), ledger, [])[0]
-    still_there = {"inv-old": {**ledger["inv-old"], "gone": False}}
-    assert client_draft_allowed(inv("INV-NEW"), still_there, [])[0]             # a live invoice with an identical twin is not renamed
+    assert not client_draft_allowed(inv("INV-NEW"), ledger, [])[0]                # same client, amount and currency
+    assert not client_draft_allowed(inv("INV-NEW", amount="101"), ledger, [])[0]  # same client, edited amount: still blocked
+    assert not client_draft_allowed(inv("INV-NEW", client="Acme Ltd.", cur="EUR"), ledger, [])[0]  # same client (punctuation, suffix)
+    assert not client_draft_allowed(inv("INV-O1", client="Other", amount="999", cur="EUR"), ledger, [])[0]  # id within two edits of inv-old
+    assert client_draft_allowed(inv("FAR-9000", client="Other", amount="999", cur="EUR"), ledger, [])[0]    # nothing in common: a draft
 
 
-# ---- the repro from the review: INV-A confirmed, renamed INV-A2, run far ahead: no client draft anywhere -----------------
+# ---- the repro from the review: ACME-77 confirmed, renamed ACME-78, run far ahead: no client draft anywhere -----------------
 
 def _write(base: Path, invoices: str, wise_rows: list[str], second_export: str | None = None):
     base.mkdir(parents=True, exist_ok=True)
@@ -116,17 +117,18 @@ def _client_eml(base: Path) -> list[str]:
 
 def test_judge_repro_confirmed_then_renamed_gets_no_client_draft_anywhere(tmp_path):
     base = tmp_path / "repro"
-    _write(base, "INV-A,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n", [ROW_A.replace("500.00", "350.00").replace("INV-101", "INV-A")])
+    _write(base, "ACME-77,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n", [ROW_A.replace("500.00", "350.00").replace("INV-101", "ACME-77")])
     assert _run(base, "2026-09-20") in (0, 2)
-    assert _cmd(base, "mark-paid", "INV-A", day="2026-09-20") == 0
-    _write(base, "INV-A2,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n", [ROW_A.replace("500.00", "350.00").replace("INV-101", "INV-A")])
-    seed_first_seen(base, "2026-09-20", "INV-A2")                        # waiting since the confirmation
+    assert _cmd(base, "mark-paid", "ACME-77", day="2026-09-20") == 0
+    _write(base, "ACME-78,Renamed Co,a@a.example,350,USD,2026-06-01,2026-07-01\n", [ROW_A.replace("500.00", "350.00").replace("INV-101", "ACME-77")])
+    seed_first_seen(base, "2026-09-20", "ACME-78")                        # waiting since the confirmation
     code = _run(base, "2027-06-30")
     assert code == 2                                                      # ORPHANED_DECISION is critical
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(base / "out" / "status.csv", encoding="utf-8"))}
-    assert rows["INV-A2"]["status"] == "needs_review"
+    assert rows["ACME-78"]["status"] == "needs_review"
     assert _client_eml(base) == []                                       # no reminder to the client, normal or CHECK FIRST
-    assert all(p.name.endswith("-check.eml") for p in (base / "out" / "drafts").glob("*.eml"))
+    assert list((base / "out" / "drafts").glob("*.eml")) == []                       # no note to you in the root of drafts/
+    assert all(p.name.endswith("-check.eml") for p in (base / "out" / "drafts" / "internal").glob("*.eml"))
     assert not (base / "out" / "drafts" / "check-first").exists() or not list((base / "out" / "drafts" / "check-first").glob("*.eml"))
 
 
@@ -137,14 +139,14 @@ def _scenario(base: Path) -> None:
     CHANGED_INVOICE (confirmed then edited), and a suggestion stuck long enough for CHECK FIRST. Plus INV-N, an ordinary overdue invoice."""
     _write(base, INVOICES, [ROW_Z, ROW_R, ROW_D], second_export=ROW_D)
     assert _run(base, "2026-09-20", second=True) in (0, 2)
-    for inv_id in ("INV-A", "INV-B", "INV-C", "INV-P"):
+    for inv_id in ("ACME-77", "INV-B", "INV-C", "INV-P"):
         assert _cmd(base, "mark-paid", inv_id, day="2026-09-20") == 0
     ledger = base / "out" / "sent.json"
     data = json.loads(ledger.read_text(encoding="utf-8"))
     for inv_id in ("INV-B", "INV-C"):                                    # one payment key behind two invoices
         data["paid"][inv_id]["payments"] = ["wise:bound-0001"]
     ledger.write_text(json.dumps(data), encoding="utf-8")
-    _write(base, INVOICES.replace("INV-A,", "INV-A2,").replace("INV-P,Changed Co,p@p.example,120", "INV-P,Changed Co,p@p.example,130"),
+    _write(base, INVOICES.replace("ACME-77,", "ACME-78,").replace("INV-P,Changed Co,p@p.example,120", "INV-P,Changed Co,p@p.example,130"),
            [ROW_Z, ROW_R, ROW_D], second_export=ROW_D)
     seed_first_seen(base, "2026-09-01", "INV-Z", "INV-R")
 
@@ -156,12 +158,12 @@ def test_scenario_control_has_client_drafts_and_every_hold_type(tmp_path, capsys
     err = capsys.readouterr().err
     assert code == 2
     assert _client_eml(base) != []                                       # the scenario really writes client drafts when nothing blocks
-    assert any(n.startswith("drafts/INV-N-") for n in _client_eml(base))
+    assert any(n.startswith("drafts/FAR-7-") for n in _client_eml(base))
     assert any(n.startswith("check-first/INV-Z-") for n in _client_eml(base))   # CHECK FIRST path exercised
     for needed in ("ORPHANED_DECISION", "PAYMENT_DOUBLE_BOUND", "CHANGED_INVOICE", "STUCK_HOLD"):
         assert needed in err, needed
     rows = {r["invoice_id"]: r for r in csv.DictReader(open(base / "out" / "status.csv", encoding="utf-8"))}
-    assert rows["INV-A2"]["status"] == "needs_review" and rows["INV-B"]["status"] == "needs_review"
+    assert rows["ACME-78"]["status"] == "needs_review" and rows["INV-B"]["status"] == "needs_review"
     assert rows["INV-R"]["status"] == "needs_review" and rows["INV-D"]["status"] == "needs_review"
     assert rows["INV-P"]["status"] == "needs_review"
 
@@ -173,7 +175,7 @@ def test_stuck_holds_for_money_that_may_have_arrived_get_no_client_draft_and_a_c
     _run(base, "2027-06-30", second=True)
     err = capsys.readouterr().err
     client = _client_eml(base)
-    for held in ("INV-R", "INV-D", "INV-A2", "INV-B", "INV-C", "INV-P"):
+    for held in ("INV-R", "INV-D", "ACME-78", "INV-B", "INV-C", "INV-P"):
         assert not any(n.split("/")[-1].startswith(held + "-") for n in client), held
     lines = [ln for ln in err.splitlines() if ln.lstrip().startswith("CRITICAL [STUCK_HOLD]")]
     assert len(lines) == 2                                               # refund-name INV-R and double-count INV-D, one line each

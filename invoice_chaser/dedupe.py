@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal
 
 from .decision import company_key
+from .gate import company_words
 from .matching import norm_name
 from .models import Payment
 
@@ -133,16 +134,40 @@ def flag_same_payment_in_two_exports(payments: list[Payment], named_ids, warn) -
                          f"them; if both are real, name both.", "POSSIBLE_DOUBLE_COUNT")
 
 
+def _exact_payer(a: Payment, b: Payment) -> bool:
+    """Both payers name the same company (ACME LTD = Acme Limited). A blank payer never matches."""
+    ka, kb = company_words(a.payer), company_words(b.payer)
+    return ka is not None and ka == kb
+
+
 def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
+    """Rows of ONE file that share a real id, or identical rows of one file, are counted as the file says (a duplicate id
+    with identical data inside one file is dropped with a warning). Anything that may be the same money seen twice across
+    DIFFERENT FILES is kept on both rows and held as a possible double count, never silently dropped or counted twice:
+      - the same id with identical data in two files of one source (overlapping statements, with or without a shared transfer id);
+      - the same amount and currency, within a day, same payer company, in two files of one source;
+      - the same amount and currency, within a day, same-looking payer, in two different sources (as before)."""
     kept: list[Payment] = []
     seen: dict[tuple[str, str], Payment] = {}
+    flagged_pairs: set[frozenset] = set()
     for p in payments:
         key = (p.source, p.id)
         q = seen.get(key)
         if q is not None:
             if (q.amount, q.currency, q.date) == (p.amount, p.currency, p.date):
-                warn(f"duplicate payment row dropped: {p.source} id {p.id} appears twice "
-                     f"({p.date}, {p.amount} {p.currency})", "DUPLICATE_PAYMENT_ROW")
+                if q.file_no == p.file_no:
+                    warn(f"duplicate payment row dropped: {p.source} id {p.id} appears twice "
+                         f"({p.date}, {p.amount} {p.currency})", "DUPLICATE_PAYMENT_ROW")
+                    continue
+                # the same payment in two different files of one source: one payment or two? both kept, held for review
+                why = f"may be the same payment as {q.source} {q.id} (same id, two different files)"
+                q.suspect = q.suspect or why
+                p.suspect = p.suspect or f"may be the same payment as {p.source} {q.id} (same id, two different files)"
+                flagged_pairs.add(frozenset((id(q), id(p))))
+                warn(f"possible duplicate across files: {p.source} id {p.id} appears in two of your {p.source} exports "
+                     f"({p.date}, {p.amount} {p.currency}); both are kept and neither will be counted as paid until you review",
+                     "POSSIBLE_DOUBLE_COUNT")
+                kept.append(p)
                 continue
             reason = f"{p.source} id {p.id} is used by two different payments"
             warn(f"{reason}; both kept but marked for review", "ID_COLLISION")
@@ -160,9 +185,17 @@ def dedupe_payments(payments: list[Payment], warn) -> list[Payment]:
             for b in group[i + 1:]:
                 if (b.date - a.date).days > 1:  # sorted by date: nothing later can be a duplicate of a
                     break
-                if a.source != b.source and _same_payer(a, b):
+                if frozenset((id(a), id(b))) in flagged_pairs:
+                    continue  # already flagged above
+                if a.source != b.source:
+                    same = _same_payer(a, b)
+                    kind = "across sources"
+                else:  # one source, two different files: an exact repeat (same payer company) may be one payment or two
+                    same = a.file_no != b.file_no and _exact_payer(a, b)
+                    kind = "across files of one source"
+                if same:
                     a.suspect = a.suspect or f"may be the same payment as {b.source} {b.id}"
                     b.suspect = b.suspect or f"may be the same payment as {a.source} {a.id}"
-                    warn(f"possible duplicate across sources: {a.source} {a.id} and {b.source} {b.id} "
+                    warn(f"possible duplicate {kind}: {a.source} {a.id} and {b.source} {b.id} "
                          f"({a.amount} {a.currency}, {a.date}); neither will be counted as paid until you review", "POSSIBLE_DOUBLE_COUNT")
     return kept

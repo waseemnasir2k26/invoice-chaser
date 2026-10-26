@@ -70,7 +70,9 @@ def test_identical_rows_stay_two_payments_but_the_same_row_in_two_files_is_one(t
     both = parse_wise(f, opts) + parse_wise(g, opts)
     assert len(both) == 3 and len({p.id for p in both}) == 3 and opts.cross_file_ids() == {p.id for p in both}
     msgs = []
-    assert len(dedupe_payments(both, lambda m, c="": msgs.append(m))) == 3 and not msgs        # only a REAL transaction id twice is dropped
+    out = dedupe_payments(both, lambda m, c="": msgs.append(m))
+    # 1.1.11: the same row in two files of ONE source is a possible double count: all three kept and held, never silently merged
+    assert len(out) == 3 and all(p.suspect for p in out) and any("POSSIBLE_DOUBLE_COUNT" in str(m) or "possible duplicate" in m for m in msgs)
 
 
 def test_reexport_cannot_move_a_confirmation_onto_another_clients_payment(tmp_path):
@@ -96,7 +98,7 @@ def test_a_waiting_review_becomes_stuck_and_an_internal_note_is_drafted(tmp_path
     setup(tmp_path, *STRANGER)
     rows = run(tmp_path, today="2026-10-10")
     assert rows["INV-1"]["status"] == "needs_review" and rows["INV-1"]["stuck"] == "" and rows["INV-1"]["waiting_days"] == "0"
-    assert not (tmp_path / "out" / "drafts" / "INV-1-check.eml").exists()
+    assert not (tmp_path / "out" / "drafts" / "internal" / "INV-1-check.eml").exists()
     rows = run(tmp_path, today="2026-10-17")                                # 7 days: not yet
     assert rows["INV-1"]["stuck"] == "" and rows["INV-1"]["waiting_days"] == "7"
     capsys.readouterr()
@@ -106,7 +108,7 @@ def test_a_waiting_review_becomes_stuck_and_an_internal_note_is_drafted(tmp_path
     assert "STUCK waiting for your decision: oldest INV-1" in out
     html = (tmp_path / "out" / "review.html").read_text(encoding="utf-8")
     assert "1 invoice stuck waiting for your decision" in html and html.index("stuck waiting") < html.index("Totals by currency")
-    note = (tmp_path / "out" / "drafts" / "INV-1-check.eml").read_text(encoding="utf-8")
+    note = (tmp_path / "out" / "drafts" / "internal" / "INV-1-check.eml").read_text(encoding="utf-8")
     assert "To: me@x.co" in note and "a@acme.example" not in note            # to YOU, never the client
     assert rows["INV-1"]["draft_file"] == ""                                 # and still no reminder to the client
     first = json.loads((tmp_path / "out" / "seen.json").read_text(encoding="utf-8"))
