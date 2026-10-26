@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.16  as of 2026-10-25
+invoice-chaser 1.1.17  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -144,6 +144,8 @@ Everything else is **needs review**: no suggestion to confirm, no reminder draft
 **Shared prices.** If you charge everyone 500 and a stranger's 500 arrives with no invoice id, that payment could belong to any of your clients. The tool does not guess and does not chase: the invoice goes to **needs review**, with the payer named in the reason. With more than 20 payments of the same amount and nothing identifying yours, it says so in one line instead of listing them. The cost is a few extra rows to look at; the alternative is a reminder to a client who already paid.
 
 **Near amounts (1.1.16).** A payment that names no invoice and no client, is in the same currency as an open invoice, and is within the larger of 3% of that invoice's outstanding amount or 5 units of it, holds that invoice: `needs review`, with `NEAR_AMOUNT` printed on every run and the exact `invoice-chaser confirm INV-1103 --payment <id>` and `invoice-chaser reject INV-1103 <id>` commands. It is never a suggestion, so no reminder goes to `drafts/`. A payment that is already matched to another invoice, or already confirmed (consumed), does not hold this one, and a payment you rejected for it does not either. Exact-amount strangers are held too, as before. Example: an 800.00 USD invoice is held by a stranger's 786.00 USD with the memo "thanks for the work", and not by 400.00.
+
+**Other currencies (1.1.17).** A payment in another currency that names no invoice holds the open invoice as `CURRENCY_MISMATCH`, with the exact `confirm` / `reject` commands, when its payer or description names the client (any currency), or when its amount is within the same 3% / 5-unit window of the invoice amount read as a plain number. Nothing is converted to compare. A payment already matched or confirmed for another invoice does not hold this one. Example: a payment "from Bluebird Media" in EUR 800.00 holds a USD 800.00 invoice for Bluebird Media. It never produces a reminder in `drafts/`.
 
 **What you confirm is remembered, and checked.** `confirm` and `mark-paid` store a snapshot of the invoice (client, amount, currency, due date). If `invoices.csv` later differs, the invoice goes back to **needs review: invoice changed since you confirmed it**, with a warning, instead of staying paid.
 

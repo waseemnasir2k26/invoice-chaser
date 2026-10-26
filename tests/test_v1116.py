@@ -139,7 +139,10 @@ def test_near_window_is_the_larger_of_3_percent_and_5_units():
 
 
 def test_the_near_amount_currency_must_match():
+    # 1.1.17 (R9): NEAR_AMOUNT stays same-currency, but an unidentified stranger in another currency whose number is near the
+    # invoice now holds it as CURRENCY_MISMATCH (a hold, never a root reminder). Before 1.1.17 this was "overdue" with a root draft.
     inv = Invoice("INV-9", "Zed Ltd", "z@z.example", Decimal("800"), "USD", date(2026, 6, 1), date(2026, 7, 1))
     pay = Payment("P", date(2026, 7, 15), Decimal("786"), "EUR", "thanks", "Nobody", "wise")
     (r,), _ = match_all([inv], [pay], date(2026, 8, 20), Config())
-    assert r.status == "overdue"
+    assert r.status == "needs_review"
+    assert r.suggestions[0].mismatch and not r.suggestions[0].near

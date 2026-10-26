@@ -1,3 +1,11 @@
+## 1.1.17 - 2026-10-26
+
+A payment in another currency that names no invoice now holds the invoice it may pay.
+
+- **Other-currency payment holds the invoice (blocker).** An unidentified payment in another currency (no invoice id, not already matched or confirmed for another invoice) holds an open invoice as `CURRENCY_MISMATCH` when either its payer or description names the client, whatever the currency, or its amount is within the `NEAR_AMOUNT` window of the invoice amount read as a plain number. The invoice is `needs_review` with the exact `confirm` / `reject` commands: no reminder in `drafts/`, and no conversion is guessed. Judge R9 case: INV-1103 USD 800 for Bluebird Media got a root reminder saying no payment carried its id, amount or client name, while a "Payment from Bluebird Media" in EUR 800 sat in the export.
+- **Accurate status note.** An open invoice with no matched payment now reads "no payment was matched to this invoice". The text is one constant (`matching.NO_MATCH_NOTE`) and asserts nothing about names or amounts.
+- **Test change.** `tests/test_v1116.py::test_the_near_amount_currency_must_match` encoded the gap: a 786 EUR stranger now holds an 800 USD invoice as `CURRENCY_MISMATCH` instead of leaving it on a root reminder. It asserts that now.
+
 ## 1.1.15 - 2026-10-26
 
 Unicode dashes name the invoice, a number in a payment holds its invoice, and a missing sender is critical.

@@ -341,6 +341,8 @@ def run(args) -> int:
             for m in r.suggestions:
                 if m.near:
                     _warn(warnings, "NEAR_AMOUNT", f"{r.invoice.id}: {m.blocker}")
+                elif m.mismatch:
+                    _warn(warnings, "CURRENCY_MISMATCH", f"{r.invoice.id}: {m.blocker}")
 
     # ---- the tool's own output: suggestions, never paid ----
     for r in results:  # say why a rejected payment is no longer suggested

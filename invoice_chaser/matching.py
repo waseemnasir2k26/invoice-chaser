@@ -52,6 +52,8 @@ _DIGIT_SKELETON = re.compile(r"(?<![0-9])[0-9]+(?:[ .\-][0-9]+)+(?![0-9])")
 # 1.1.16 NEAR_AMOUNT: an unidentified payment within max(NEAR_PCT of the outstanding amount, NEAR_ABS) of an open invoice, same currency
 NEAR_PCT = Decimal("0.03")
 NEAR_ABS = Decimal(5)
+# 1.1.17: the one status note for an open invoice that no payment was matched to (it asserts nothing about names or amounts)
+NO_MATCH_NOTE = "no payment was matched to this invoice"
 # Rules the tests switch off one at a time to prove each test depends on its rule.
 FUTURE_CHECK = True
 COUNT_SETTLED_PEERS = True
@@ -540,6 +542,40 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
                 payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
                 named=tuple(sorted(infos[pi].ids)), suspect=p.suspect, near=True))
 
+    # 1.1.17 CURRENCY_MISMATCH. An unidentified payment (no invoice id, no foreign id, not matched or confirmed for another invoice) in
+    # ANOTHER currency holds an open invoice when either (a) its payer or description names the client, whatever the currency, or
+    # (b) its amount is within the NEAR_AMOUNT window of the invoice amount read as a plain number. Nothing is converted: this is a
+    # hold for your check, never a suggestion and never a reminder in drafts/.
+    foreign_pool = [pi for pi in range(len(payments)) if pi not in used and not infos[pi].ids and not infos[pi].foreign
+                    and payments[pi].amount > 0]
+    for inv in active:
+        if inv.amount <= 0 or len(suggested[inv.id]) >= 2:
+            continue
+        span = max(inv.amount * NEAR_PCT, NEAR_ABS)
+        client = norm_name(inv.client)
+        for pi in foreign_pool:
+            p = payments[pi]
+            if p.currency == inv.currency or len(suggested[inv.id]) >= 2:
+                continue
+            if (inv.id.strip().lower(), f"{p.source}:{p.id}") in excluded:
+                continue
+            named = same_company(inv.client, p.payer) or (bool(client) and any(
+                f" {client} " in f" {norm_name(t)} " for t in (p.description, p.payer) if t))
+            if not named and abs(p.amount - inv.amount) > span:
+                continue
+            cmd_inv, cmd_pay = quote(inv.id), quote(p.id)
+            if named:
+                what = f"a payment from {inv.client} in {p.currency} {p.amount} may be for this {inv.currency} invoice: check it"
+            else:
+                what = (f"a payment of {p.currency} {p.amount} with no invoice id and no client name is close to this "
+                        f"{inv.currency} invoice's {inv.amount:.2f}: check it")
+            suggested[inv.id].append(Match(
+                inv.id, p.id, p.date, p.description, 0.0, "payment in another currency; no invoice id in the payment",
+                blocker=(f"CURRENCY_MISMATCH: {what}. If it pays this invoice: invoice-chaser confirm {cmd_inv} --payment {cmd_pay}. "
+                         f"If not: invoice-chaser reject {cmd_inv} {cmd_pay}"),
+                payer=p.payer, source=p.source, currency=p.currency, amount=p.amount,
+                named=tuple(sorted(infos[pi].ids)), suspect=p.suspect, mismatch=True))
+
     for iid, pi in net_first.items():  # 1.1.15: the held payment is listed as a candidate, so `reject` can say it is not this invoice's
         p = payments[pi]
         if len(suggested[iid]) < 2 and not any(m.payment_id == p.id and m.source == p.source for m in suggested[iid]):
@@ -569,14 +605,14 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
         elif sg:
             st, out = "needs_review", inv.amount
             why = "; ".join(f"{m.payment_id}: {m.blocker}" for m in sg)
-            if inv.id in bulk and all(m.near for m in sg):  # 1.1.16: a NEAR_AMOUNT hold keeps the bulk reason it would otherwise show
+            if inv.id in bulk and all(m.near or m.mismatch for m in sg):  # 1.1.16/1.1.17: a hold keeps the bulk reason it would show
                 why = bulk[inv.id] + "; " + why
         elif inv.id in bulk:
             st, out = "needs_review", inv.amount
             why = bulk[inv.id]
         elif overdue > 0:
             st, out, stage = "overdue", inv.amount, stage_for(overdue, cfg.stage_days)
-            why = "no payment in the exports carries this invoice id, amount or client name"
+            why = NO_MATCH_NOTE
         else:
             st, out = "open", inv.amount
             why = f"not due until {inv.due.isoformat()}"

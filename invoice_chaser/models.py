@@ -49,6 +49,7 @@ class Match:
     named: tuple = ()  # invoice ids the payment text names
     suspect: str = ""  # why this payment is held (possible duplicate, id collision...)
     near: bool = False  # 1.1.16: a NEAR_AMOUNT candidate: within 3% / 5 units of the invoice, names no invoice or client
+    mismatch: bool = False  # 1.1.17: a CURRENCY_MISMATCH hold: an unidentified payment in another currency (never converted)
 
 
 @dataclass
