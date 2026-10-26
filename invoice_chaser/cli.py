@@ -57,7 +57,8 @@ from .ledger import (
     unrecord_paid,
 )
 from .llm import personal_line
-from .matching import match_all_ex
+from .matching import match_all_ex, plausible_payment_refs, refund_rows
+from .models import Match
 from .parsers import (
     ParseError,
     ParseOptions,
@@ -161,6 +162,7 @@ def run(args) -> int:
     llm_keys = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
     invoices, payments, opts = _load_exports(args, cfg)
+    all_rows = [*payments, *opts.ignored]  # 1.1.20: every payment row of the exports, refunds included, before any decision removes one
 
     out = Path(args.out)
     lpath = _ledger_path(args)
@@ -189,11 +191,13 @@ def run(args) -> int:
         rows_by_key.setdefault(row["key"], row)
     all_keys = {_pkey(p) for p in payments}
     kept = []
+    human_confirmed: set[str] = set()  # 1.1.20: payments you confirmed (for any invoice): the PLAUSIBLE_PAYMENT gate leaves them out
     for p in payments:
         k = _pkey(p)
         if k in consumed:
             row = rows_by_key.get(k)
             if row is not None and row_matches(p, row, 0):
+                human_confirmed.add(k)
                 continue  # the very payment you confirmed (same id AND same date, amount, currency and payer): consumed
             owner = row["invoice"] if row else consumed[k]
             if row is not None:
@@ -335,6 +339,31 @@ def run(args) -> int:
         confirmed = Decimal(rec["amount"]) if rec and not (CHECK_SNAPSHOT and snapshot_diff(rec.get("snapshot", {}), r.invoice)) else Decimal("0")
         r.owed = (r.invoice.amount - confirmed).quantize(Decimal("0.01"))
 
+    # 1.1.20 PLAUSIBLE_PAYMENT and REFUND: the last gate before a client reminder. EVERY row of the exports is checked, not only the rows
+    # matched to an invoice, so a payment consumed by another invoice still holds this one. The held invoice is needs_review with the
+    # exact confirm / reject commands, and gets no reminder in drafts/. Only a payment you confirmed, or rejected for THIS invoice, is left out.
+    flag_here = "" if _out_hint(args.out) == "out" else f" --out {quote(_out_hint(args.out))}"
+    for r in results:
+        inv = r.invoice
+        key = inv.id.strip().lower()
+        if r.status == "suggested_paid":
+            refunds = refund_rows(inv, all_rows, today)
+            if refunds:
+                why = "; ".join(f"refund seen on {p.date.isoformat()} for {abs(p.amount):.2f} {p.currency}: check the repayment"
+                                for p in refunds)
+                _hold_for_check(r, why, "REFUND_REPAYMENT", "refund seen: no reminder is drafted until you check the repayment", warnings,
+                                r.matches)
+            continue
+        if r.status not in ("overdue", "partial") or not r.stage:
+            continue  # only an invoice that would get an ordinary reminder reaches the gate
+        skip = human_confirmed | {k for (iid, k) in excluded if iid == key}
+        hits = plausible_payment_refs(inv, all_rows, r.owed, skip, cfg.ref_prefixes)
+        if not hits:
+            continue
+        matches = [_plausible_match(inv, p, why, flag_here) for p, why in hits]
+        why = " | ".join(m.blocker for m in matches)
+        _hold_for_check(r, why, "PLAUSIBLE_PAYMENT", "possible payment found: no reminder is drafted until you check it", warnings, matches)
+
     # 1.1.16: an unidentified payment near an open invoice holds it: say so on every run, with the confirm / reject commands
     for r in results:
         if r.status == "needs_review":
@@ -474,6 +503,25 @@ def run(args) -> int:
     if any(getattr(w, "severity", "warning") == "critical" for w in warnings):
         return 2  # a CRITICAL notice (see README: exit codes) must not be missed by a script or a scheduled job
     return 0
+
+
+def _plausible_match(inv, p, why: list[str], flag: str) -> Match:
+    """A candidate for a PLAUSIBLE_PAYMENT hold: listed under suggestions so `confirm --payment` and `reject` can name it."""
+    cmd_inv, cmd_pay = quote(inv.id), quote(p.id)
+    reasons = "; ".join(why)
+    return Match(inv.id, p.id, p.date, p.description, 0.0, reasons,
+                 blocker=(f"PLAUSIBLE_PAYMENT: payment {p.id} ({p.amount} {p.currency}, {p.date.isoformat()}, payer {p.payer or 'none'}) "
+                          f"could be this invoice's payment: {reasons}. If it pays this invoice: invoice-chaser confirm {cmd_inv} "
+                          f"--payment {cmd_pay}{flag}. If not: invoice-chaser reject {cmd_inv} {cmd_pay}{flag}"),
+                 payer=p.payer, source=p.source, currency=p.currency, amount=p.amount, suspect=p.suspect)
+
+
+def _hold_for_check(r, why: str, code: str, note: str, warnings: list, suggestions: list) -> None:
+    """1.1.20: hold an invoice that would have had a reminder as needs_review. Nothing is paid, nothing is drafted."""
+    r.status, r.stage, r.paid, r.outstanding = "needs_review", None, Decimal("0.00"), r.invoice.amount
+    r.suggestions, r.matches = list(suggestions), []
+    r.why_not_paid, r.note = why, note
+    _warn(warnings, code, f"{r.invoice.id} ({r.invoice.client}): {why}")
 
 
 def _suggestions(results, received_marks, cfg, today) -> list[dict]:

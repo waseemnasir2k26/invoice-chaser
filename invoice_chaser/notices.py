@@ -34,6 +34,8 @@ SEVERITY = {
     "NEAR_AMOUNT": "warning",
     "CURRENCY_MISMATCH": "warning",
     "REFUND_SEEN": "warning",
+    "PLAUSIBLE_PAYMENT": "warning",
+    "REFUND_REPAYMENT": "warning",
     # routine
     "NEGATIVE_ROWS": "routine",
     "ROWS_SKIPPED_STATUS": "routine",

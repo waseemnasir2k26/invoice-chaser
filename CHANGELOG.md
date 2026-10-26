@@ -1,3 +1,11 @@
+## 1.1.20 - 2026-10-26
+
+One final gate before any reminder: a payment that could be an invoice's payment holds it, and a refund holds a suggested payment.
+
+- **PLAUSIBLE_PAYMENT (`matching.plausible_payment_refs`).** Before an ordinary reminder is written, every payment row read by the run is checked against the invoice: its number in the text, the client's name near the payer or description (similarity 0.6, the hold threshold), or an amount within the NEAR_AMOUNT window of the amount still owed, in any currency. Rows consumed by another invoice are checked too. A match holds the invoice as `needs_review` with the payment ids, the reasons and the `confirm` / `reject` commands. Left out: a payment you confirmed (for any invoice) or rejected for this invoice. Fixes the R11 blocker: one "Payment from Bluebird Media" for 800 USD suggested INV-1103 and let Bluebird Medical (INV-1200, 800 USD) get a root reminder.
+- **REFUND_REPAYMENT (`matching.refund_rows`).** A negative row for the same client and about the invoice amount, dated from issue to the run date, holds a suggested-paid invoice: "refund seen on <date> for <amount>: check the repayment". The matched payment stays as a candidate for `confirm --payment` / `reject`.
+- **Not changed.** Held invoices with a suggestion keep their hold paths; CHECK FIRST drafts still follow the stuck rules. A payment you confirmed, or rejected for this invoice, is not checked against it.
+
 ## 1.1.19 - 2026-10-26
 
 Naming a held payment in `confirm` is recorded as a weak confirmation, and the README says so.

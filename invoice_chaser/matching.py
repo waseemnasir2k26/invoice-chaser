@@ -186,6 +186,65 @@ def hold_reason(named: bool, near_amount: bool, other_currency: bool = False) ->
     return "; ".join(bits)
 
 
+def mention_tokens(p: Payment) -> frozenset:
+    """Digit runs of the payment text, plus its digit skeleton (1.1.16): "INV-1 103" and "INV-11.03" mention 1103. The one reader of
+    invoice numbers in a payment: the 1.1.15 safety net and the 1.1.20 PLAUSIBLE_PAYMENT gate both use it."""
+    found: set[str] = set()
+    for text in field_texts(p.description, p.payer):
+        norm = normalise(text)
+        found.update(re.findall(r"\d+", norm))
+        for run in _DIGIT_SKELETON.findall(norm):
+            found.add(re.sub(r"[ .\-]", "", run))
+    return frozenset(found)
+
+
+# 1.1.20 PLAUSIBLE_PAYMENT. The last gate before a client reminder. It scans EVERY payment row of the exports (matched, consumed by
+# another invoice or not, any currency, refunds included) and reports each row that could be this invoice's payment: an invoice number
+# in its text, the client's name near its payer or description (the same similarity the holds use), or an amount within the NEAR_AMOUNT
+# window of what is still owed. Only a payment you confirmed (for any invoice) or rejected for THIS invoice is left out.
+NAME_NEAR = 0.6  # the similarity at which a payer or description counts as the client (the same threshold as _score)
+
+
+def names_client(client: str, p: Payment) -> bool:
+    """1.1.20: the client's name is in the payer or description: a whole-word match, or a similarity of NAME_NEAR or more."""
+    if client_named(client, p):
+        return True
+    return bool(p.payer or p.description) and name_similarity(client, p.payer, p.description) >= NAME_NEAR
+
+
+def plausible_payment_refs(invoice: Invoice, all_payments, outstanding: Decimal, skip=frozenset(), prefixes=()) -> list:
+    """[(Payment, [reason, ...])] for every row that could be a payment for `invoice`. `skip` holds "source:id" keys to leave out."""
+    idx = IdIndex([invoice.id], prefixes)
+    runs = {r for r in re.findall(r"\d+", normalise(invoice.id)) if len(r) >= 3}
+    span = max(Decimal(outstanding) * NEAR_PCT, NEAR_ABS)
+    hits = []
+    for p in all_payments:
+        if f"{p.source}:{p.id}" in skip:
+            continue
+        why = []
+        if any(invoice.id in idx.find(t) for t in field_texts(p.description, p.payer)):
+            why.append(f"invoice id {invoice.id} is in its text")
+        mentioned = mention_tokens(p) & runs
+        if mentioned:
+            why.append("invoice number " + ", ".join(sorted(mentioned)) + " is in its text")
+        if names_client(invoice.client, p):
+            sim = name_similarity(invoice.client, p.payer, p.description)
+            why.append(f"client name near the payer or description (similarity {sim:.2f})")
+        if p.amount > 0 and abs(p.amount - Decimal(outstanding)) <= span:
+            why.append(f"amount {p.amount} {p.currency} is within the NEAR_AMOUNT window of {Decimal(outstanding):.2f} (any currency)")
+        if why:
+            hits.append((p, why))
+    return hits
+
+
+def refund_rows(invoice: Invoice, all_payments, today: date) -> list:
+    """1.1.20 REFUND: negative rows that name the client for about the invoice amount (any currency), dated from the day the invoice was
+    issued to the run date. A refund like that may have cancelled the payment that a suggestion counts."""
+    span = max(invoice.amount * NEAR_PCT, NEAR_ABS)
+    return [p for p in all_payments
+            if p.amount < 0 and invoice.issued <= p.date <= today and abs(abs(p.amount) - invoice.amount) <= span and names_client(invoice.client, p)]
+
+
 def _rate(pay_cur: str, inv_cur: str, rates: dict[str, str]) -> Decimal | None:
     if pay_cur == inv_cur:
         return Decimal(1)
@@ -345,16 +404,9 @@ def match_all_ex(invoices: list[Invoice], payments: list[Payment], today: date, 
     tok_cache: dict[int, frozenset] = {}
 
     def _mention_tokens(pi: int) -> frozenset:
-        """Digit runs of the payment text, plus its digit skeleton (1.1.16): "INV-1 103" and "INV-11.03" mention 1103."""
         t = tok_cache.get(pi)
         if t is None:
-            found: set[str] = set()
-            for text in field_texts(payments[pi].description, payments[pi].payer):
-                norm = normalise(text)
-                found.update(re.findall(r"\d+", norm))
-                for run in _DIGIT_SKELETON.findall(norm):
-                    found.add(re.sub(r"[ .\-]", "", run))
-            t = tok_cache[pi] = frozenset(found)
+            t = tok_cache[pi] = mention_tokens(payments[pi])
         return t
 
     def _net_hit(iid: str, pi: int) -> bool:
