@@ -51,7 +51,7 @@ From `invoice-chaser demo` (synthetic data, dated 2026-10-25). The blocks below 
 <!-- sample:demo-output -->
 
 ```
-invoice-chaser 1.1.11  as of 2026-10-25
+invoice-chaser 1.1.12  as of 2026-10-25
   needs_review=1  open=1  overdue=3  paid=1  partial_suggested=1  suggested_paid=2
   INV-1001   suggested_paid          0.00 USD   24d  -
   INV-1002   partial_suggested    1500.00 USD   15d  -
@@ -183,6 +183,7 @@ A payment key can back at most ONE invoice in the ledger. This is checked on eve
 - If the ledger ever shows one payment behind two invoices, `run` prints a **CRITICAL `PAYMENT_DOUBLE_BOUND`** warning naming both invoices and the payment, and holds both invoices (`held:` in the list, no reminder, not counted paid). It prints the command for each invoice: `invoice-chaser unbind <invoice> <payment>`.
 - `invoice-chaser unbind INV PAYMENT` removes that invoice's confirmation for that payment. The invoice goes back to a fresh suggestion, and the other invoice keeps its own confirmation. It can only send an invoice back to review; it never marks anything paid.
 - `confirm` and `rebind` refuse a payment that already backs any invoice, and say which one.
+- `confirm --payment` and `rebind` refuse a payment whose text names a different known invoice (`TRANSFER-1 names INV-A, not INV-C`); `--force` records it with a warning.
 - A write is refused, and nothing is written, when it would add a second binding. Existing bindings are removed with `unbind`, which is always allowed.
 
 ## Exit codes

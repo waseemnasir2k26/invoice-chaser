@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.12 - 2026-10-26
+
+- `confirm INV --payment ID` and `rebind` refuse a payment whose text names a different known invoice id, unless `--force` (then recorded with a warning).
+
 ## 1.1.11 - 2026-10-26
 
 Two blockers from the judge review: a renamed-and-edited invoice and a double payment across two exports of one source no longer slip through; notes to you live apart from client drafts.

@@ -493,15 +493,21 @@ def _warn(warnings: list, code: str, message: str) -> None:
     warnings.append(Notice(message, code))
 
 
+def _name_clash(subject: str, invoice: str, named) -> str | None:
+    """The one rule for a payment whose text names known invoice ids: it names a DIFFERENT invoice when the named ids do not include
+    `invoice`. None when it names nothing, or names this invoice."""
+    if named and invoice.strip().lower() not in {n.strip().lower() for n in named}:
+        return f"{subject} names {', '.join(named)}, not {invoice}"
+    return None
+
+
 def _verdict(row_invoice: str, row_key: str, p, named: list[str]) -> str:
     """May this current payment stand in for the decision's old one? The same checks as the repeat check: two different real bank
     transaction ids are two payments, and a payment that names a different invoice is not the one that was decided for this invoice."""
     old_id = row_key.split(":", 1)[-1]
     if not is_hash_id(p.id) and not is_hash_id(old_id) and p.id != old_id:
         return f"different bank transaction ids ({old_id} / {p.id}): two payments"
-    if named and row_invoice.strip().lower() not in {n.strip().lower() for n in named}:
-        return f"it names {', '.join(named)}, not {row_invoice}"
-    return "ok"
+    return _name_clash("it", row_invoice, named) or "ok"
 
 
 def _find_orphans(lpath: Path, payments: list, invoices: list, id_index: IdIndex, all_keys: set) -> list[dict]:
@@ -1034,6 +1040,12 @@ def confirm(args) -> int:
     _refuse_duplicate_ids(out, args.invoice.strip())
     if getattr(args, "payment", None):
         entry = _entry_with_payments(entries, args.invoice, args.payment)
+        for p in entry["payments"]:  # a payment whose text names a different known invoice: refused unless --force, then warned
+            clash = _name_clash(p["id"], entry["invoice_id"], p.get("named", ()))
+            if clash and not args.force:
+                raise ValueError(f"{clash}: pass --force if you're sure")
+            if clash:
+                print(f"WARNING: {clash}: recorded because of --force", file=sys.stderr)
         _check_still_valid([entry], meta, lpath, real_today)
         summaries, changed = _confirm_all([entry], when, lpath)
         if not changed:
@@ -1296,9 +1308,12 @@ def rebind(args) -> int:
         raise ValueError(f"{args.new!r} is not one of the look-alike payments found for {pay[0]['old']} "
                          f"({', '.join(cands) or 'none'})")
     c = hits[0]
-    if c["verdict"] != "ok":
+    if c["verdict"] != "ok" and not (args.force and c["verdict"] == _name_clash("it", pay[0]["invoice"], c["named"])):
         raise ValueError(f"refused: {c['verdict']}. {c['key']} is not safe to treat as the payment you decided about. "
-                         f"If you are sure it is wrong to keep the old decision: `invoice-chaser forget {quote(pay[0]['old'])}`")
+                         f"If you are sure it is wrong to keep the old decision: `invoice-chaser forget {quote(pay[0]['old'])}`; "
+                         f"or pass --force to attach it anyway")
+    if c["verdict"] != "ok":
+        print(f"WARNING: {c['key']}: {c['verdict']}; attached because of --force", file=sys.stderr)
     old_key = pay[0]["old"]
     if not rebind_keys(lpath, {old_key: c["key"]}):
         print(f"nothing changed: {old_key} already points at {c['key']}")
@@ -1391,6 +1406,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--all-strong", action="store_true", help="confirm every strong suggested-paid invoice (prints the list, asks y/N)")
     c.add_argument("--yes", action="store_true", help="do not ask (use after reviewing the list)")
     c.add_argument("--payment", action="append", help="count only this payment (repeatable); also works on a held suggestion")
+    c.add_argument("--force", action="store_true", help="with --payment: count a payment whose text names a different invoice")
     c.add_argument("--date", help="payment received on YYYY-MM-DD (default: today; not in the future)")
     c.add_argument("--today", help=argparse.SUPPRESS)
     common(c, invoice=False)
@@ -1432,6 +1448,7 @@ def build_parser() -> argparse.ArgumentParser:
     rb.add_argument("old")
     rb.add_argument("new")
     rb.add_argument("--today", help=argparse.SUPPRESS)
+    rb.add_argument("--force", action="store_true", help="attach to a payment whose text names a different invoice (warned, recorded)")
     common(rb, invoice=False)
     rb.set_defaults(fn=rebind)
 
