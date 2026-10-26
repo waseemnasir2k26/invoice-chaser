@@ -1,3 +1,11 @@
+## 1.1.21 - 2026-10-26
+
+PLAUSIBLE_PAYMENT no longer holds a repeat client's new invoices on an old payment.
+
+- **Date window for name and amount signals (`matching.payment_window_start`).** The client-name and NEAR_AMOUNT signals of `plausible_payment_refs` count only a payment dated on or after the invoice's issue date (due date less 60 days if the issue date is missing). A repeat client's earlier payment, already matched to an older invoice, no longer holds every new overdue invoice.
+- **Id signals keep no window.** A payment that quotes the invoice number still holds the invoice at any date, including a prepayment dated before issue.
+- **Not changed.** The matcher, the confirm / reject rules, and the REFUND_REPAYMENT check.
+
 ## 1.1.20 - 2026-10-26
 
 One final gate before any reminder: a payment that could be an invoice's payment holds it, and a refund holds a suggested payment.

@@ -23,7 +23,7 @@ import re
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
 from functools import cache, lru_cache
@@ -212,11 +212,20 @@ def names_client(client: str, p: Payment) -> bool:
     return bool(p.payer or p.description) and name_similarity(client, p.payer, p.description) >= NAME_NEAR
 
 
+def payment_window_start(invoice: Invoice) -> date:
+    """1.1.21: the earliest payment date a NAME or AMOUNT signal may count for this invoice: its issue date (due date less 60 days if
+    the issue date is missing). Id and digit signals name the invoice itself, so they carry no window."""
+    return invoice.issued if invoice.issued is not None else invoice.due - timedelta(days=60)
+
+
 def plausible_payment_refs(invoice: Invoice, all_payments, outstanding: Decimal, skip=frozenset(), prefixes=()) -> list:
-    """[(Payment, [reason, ...])] for every row that could be a payment for `invoice`. `skip` holds "source:id" keys to leave out."""
+    """[(Payment, [reason, ...])] for every row that could be a payment for `invoice`. `skip` holds "source:id" keys to leave out.
+    1.1.21: a name or amount signal only counts for a payment dated on or after payment_window_start(invoice), so a repeat client's
+    old payment (for an earlier invoice) cannot hold every new invoice. An id or digit signal still holds at any date."""
     idx = IdIndex([invoice.id], prefixes)
     runs = {r for r in re.findall(r"\d+", normalise(invoice.id)) if len(r) >= 3}
     span = max(Decimal(outstanding) * NEAR_PCT, NEAR_ABS)
+    start = payment_window_start(invoice)
     hits = []
     for p in all_payments:
         if f"{p.source}:{p.id}" in skip:
@@ -227,10 +236,11 @@ def plausible_payment_refs(invoice: Invoice, all_payments, outstanding: Decimal,
         mentioned = mention_tokens(p) & runs
         if mentioned:
             why.append("invoice number " + ", ".join(sorted(mentioned)) + " is in its text")
-        if names_client(invoice.client, p):
+        in_window = p.date >= start
+        if in_window and names_client(invoice.client, p):
             sim = name_similarity(invoice.client, p.payer, p.description)
             why.append(f"client name near the payer or description (similarity {sim:.2f})")
-        if p.amount > 0 and abs(p.amount - Decimal(outstanding)) <= span:
+        if in_window and p.amount > 0 and abs(p.amount - Decimal(outstanding)) <= span:
             why.append(f"amount {p.amount} {p.currency} is within the NEAR_AMOUNT window of {Decimal(outstanding):.2f} (any currency)")
         if why:
             hits.append((p, why))
